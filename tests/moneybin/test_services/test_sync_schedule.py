@@ -125,6 +125,7 @@ def test_schedule_show_refuses_unreadable_os_time_zone(
 def schedule(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ScheduleFixture:
     from moneybin.services.sync_schedule import SyncScheduleService
 
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setattr(
         "keyring.util.platform_.config_root", lambda: tmp_path / "keyring"
     )
@@ -228,6 +229,8 @@ def test_runner_forwards_bound_addressing_after_ambient_properties_change(
 
     service, _, clock = schedule
     monkeypatch.setattr(sys, "platform", "linux")
+    config_home = service.home / "config space %literal"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
     monkeypatch.setenv("KEYRING_PROPERTY_SCHEME", "KeePassXC")
     monkeypatch.setenv(
         "KEYRING_PROPERTY_PREFERRED_COLLECTION",
@@ -244,6 +247,7 @@ def test_runner_forwards_bound_addressing_after_ambient_properties_change(
     monkeypatch.setattr("moneybin.services.sync_schedule.subprocess.Popen", spawn)
     assert service.run() == 0
     environment = spawn.call_args.kwargs["env"]
+    assert environment["XDG_CONFIG_HOME"] == str(config_home)
     assert environment["KEYRING_PROPERTY_SCHEME"] == "KeePassXC"
     assert environment["KEYRING_PROPERTY_APPID"] == "synthetic-application"
     assert environment["KEYRING_PROPERTY_PREFERRED_COLLECTION"].endswith("/synthetic")

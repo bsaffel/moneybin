@@ -46,6 +46,9 @@ def clean_environment() -> dict[str, str]:
         "DBUS_SESSION_BUS_ADDRESS",
     }
     env = {k: v for k, v in os.environ.items() if k in allowed or k.startswith("LC_")}
+    config_home = os.environ.get("XDG_CONFIG_HOME", "")
+    if sys.platform == "linux" and Path(config_home).is_absolute():
+        env["XDG_CONFIG_HOME"] = config_home
     env["PATH"] = _SAFE_PATH
     return env
 
@@ -185,13 +188,16 @@ def _matches(path: Path, contents: bytes) -> bool:
     )
 
 
-def _runner_args(job: ScheduleDefinition, user_home: Path) -> list[str]:
+def _runner_args(
+    job: ScheduleDefinition, user_home: Path, config_home: Path | None = None
+) -> list[str]:
     # env -i strips the user manager's environment before uv or MoneyBin starts.
     return [
         "/usr/bin/env",
         "-i",
         f"HOME={user_home}",
         f"PATH={_SAFE_PATH}",
+        *([f"XDG_CONFIG_HOME={config_home}"] if config_home is not None else []),
         *(
             f"{name}={value}"
             for name, value in job.secret_addressing.environment().items()
@@ -403,7 +409,17 @@ class SystemdScheduleAdapter:
     ) -> None:
         """Target the current user's systemd manager and unit directory."""
         self.user_home = user_home or Path.home()
+        configured = Path(os.environ.get("XDG_CONFIG_HOME", ""))
+        self.config_home = (
+            configured if configured.is_absolute() else self.user_home / ".config"
+        )
         self.command = command
+
+    def _environment(self) -> dict[str, str]:
+        return clean_environment() | {
+            "HOME": str(self.user_home),
+            "XDG_CONFIG_HOME": str(self.config_home),
+        }
 
     def _call(self, args: list[str], *, check: bool = True):
         try:
@@ -412,7 +428,7 @@ class SystemdScheduleAdapter:
                 capture_output=True,
                 text=True,
                 stdin=subprocess.DEVNULL,
-                env=clean_environment(),
+                env=self._environment(),
                 timeout=30,
                 check=False,
             )
@@ -437,7 +453,7 @@ class SystemdScheduleAdapter:
 
     def service_path(self, job: ScheduleDefinition) -> Path:
         """Return the single owned service definition path."""
-        return self.user_home / ".config/systemd/user" / f"{job.job_id}.service"
+        return self.config_home / "systemd/user" / f"{job.job_id}.service"
 
     def timer_path(self, job: ScheduleDefinition) -> Path:
         """Return the matching owned daily timer path."""
@@ -450,7 +466,14 @@ class SystemdScheduleAdapter:
             "Requisite=graphical-session.target\n"
             "After=graphical-session.target\nPartOf=graphical-session.target\n"
         )
-        arguments = list(map(_unit_quote, _runner_args(job, self.user_home)))
+        # The default env -i runner already derives .config from HOME; retain
+        # its existing bytes so installed default jobs keep their ownership.
+        config_home = (
+            self.config_home if self.config_home != self.user_home / ".config" else None
+        )
+        arguments = list(
+            map(_unit_quote, _runner_args(job, self.user_home, config_home))
+        )
         # %t is the native user-runtime directory, resolved anew each session;
         # only these fixed specifiers expand, never percent signs from user paths.
         arguments[4:4] = [
@@ -580,7 +603,7 @@ class SystemdScheduleAdapter:
                 capture_output=True,
                 text=True,
                 stdin=subprocess.DEVNULL,
-                env=clean_environment(),
+                env=self._environment(),
                 timeout=30,
                 check=False,
             )
@@ -592,7 +615,8 @@ class SystemdScheduleAdapter:
             raise schedule_error("Native systemd definition validation failed.")
         self._call(["daemon-reload"])
         self._call(["enable", "--now", f"{job.job_id}.timer"])
-        if not self.inspect(job).active:
+        status = self.inspect(job)
+        if not status.owned or not status.active or status.partial:
             raise schedule_error("The installed systemd timer could not be verified.")
 
     def remove(self, job: ScheduleDefinition) -> None:

@@ -586,6 +586,32 @@ def test_existing_client_factory_uses_explicit_identity_without_creation(
     create.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "binding_flags",
+    [
+        ["--scheduled-profile-id", "0123456789ab"],
+        ["--scheduled-revision", "1" * 32],
+        ["--scheduled-profile-id", "0123456789ab", "--scheduled-revision", "1" * 32],
+    ],
+)
+def test_scheduled_binding_flags_require_scheduled_before_runtime_access(
+    monkeypatch: pytest.MonkeyPatch, binding_flags: list[str]
+) -> None:
+    from moneybin.cli.commands import sync
+
+    forbidden = Mock(side_effect=AssertionError("invalid flags reached runtime"))
+    monkeypatch.setattr(sync, "get_terminal_policy", forbidden)
+    monkeypatch.setattr(sync, "_build_sync_service", forbidden)
+    monkeypatch.setattr("moneybin.config.get_settings", forbidden)
+    monkeypatch.setattr("moneybin.secrets.scheduled_secret_access", forbidden)
+
+    result = runner.invoke(app, ["sync", "pull", *binding_flags])
+
+    assert result.exit_code == 2, result.output
+    assert "require --scheduled" in result.output
+    forbidden.assert_not_called()
+
+
 def test_scheduled_child_passes_binding_to_service_construction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

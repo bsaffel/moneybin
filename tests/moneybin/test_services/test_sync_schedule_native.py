@@ -13,6 +13,133 @@ from moneybin.services.sync_schedule_native import ScheduleDefinition
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def isolate_xdg_config_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+
+@pytest.mark.parametrize("setting", [None, "", "relative/config", "custom"])
+def test_linux_config_home_paths_and_runner_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setting: str | None
+) -> None:
+    from moneybin.services.sync_schedule_native import (
+        SystemdScheduleAdapter,
+        clean_environment,
+    )
+
+    home = tmp_path / "home"
+    monkeypatch.setattr("moneybin.services.sync_schedule_native.sys.platform", "linux")
+    custom = tmp_path / "config space %literal"
+    if setting is not None:
+        monkeypatch.setenv(
+            "XDG_CONFIG_HOME", str(custom) if setting == "custom" else setting
+        )
+    adapter = SystemdScheduleAdapter(user_home=home)
+    job = make_job(tmp_path).model_copy(update={"mechanism": "systemd"})
+    root = custom if setting == "custom" else home / ".config"
+    assert adapter.service_path(job) == root / "systemd/user" / f"{job.job_id}.service"
+    assert adapter.timer_path(job) == root / "systemd/user" / f"{job.job_id}.timer"
+    service = adapter.render(job)[adapter.service_path(job)].decode()
+    if setting == "custom":
+        assert f'"XDG_CONFIG_HOME={str(custom).replace("%", "%%")}"' in service
+        assert clean_environment()["XDG_CONFIG_HOME"] == str(custom)
+    else:
+        assert "XDG_CONFIG_HOME=" not in service
+        assert "XDG_CONFIG_HOME" not in clean_environment()
+    assignments = [
+        f"HOME={home}",
+        "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+        "XDG_RUNTIME_DIR=%t",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus",
+        *(
+            [f"XDG_CONFIG_HOME={str(custom).replace('%', '%%')}"]
+            if setting == "custom"
+            else []
+        ),
+        *(
+            f"{key}={value}"
+            for key, value in job.secret_addressing.environment().items()
+        ),
+    ]
+    prefix = 'ExecStart="/usr/bin/env" "-i" ' + " ".join(
+        f'"{arg}"' for arg in assignments
+    )
+    assert service.split("ExecStart=", 1)[1].startswith(
+        prefix.removeprefix("ExecStart=") + ' "/opt/space path/uv" '
+    )
+
+
+@pytest.mark.parametrize("custom", [False, True])
+def test_linux_install_preserves_effective_config_home_in_native_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, custom: bool
+) -> None:
+    import subprocess  # noqa: S404  # compare subprocess constants, no execution
+
+    from moneybin.services.sync_schedule_native import NativeStatus, clean_environment
+
+    config = tmp_path / "config space %literal" if custom else tmp_path / ".config"
+    if custom:
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    manager = RemovalManager(tmp_path)
+    command = Mock(wraps=manager.run)
+    manager.adapter.command = command
+    monkeypatch.setattr(
+        manager.adapter,
+        "inspect",
+        Mock(
+            side_effect=[
+                NativeStatus(False, True, False, False),
+                NativeStatus(True, True, True, False),
+            ]
+        ),
+    )
+    manager.adapter.install(manager.job)
+    assert any(
+        call.args[0][0] == "/usr/bin/systemd-analyze" for call in command.call_args_list
+    )
+    for call in command.call_args_list:
+        assert call.kwargs == {
+            "capture_output": True,
+            "text": True,
+            "stdin": subprocess.DEVNULL,
+            "env": {
+                **clean_environment(),
+                "HOME": str(tmp_path),
+                "XDG_CONFIG_HOME": str(config),
+            },
+            "timeout": 30,
+            "check": False,
+        }
+
+
+@pytest.mark.parametrize("postcondition", ["unowned", "partial", "inactive"])
+def test_linux_install_refuses_unverified_postcondition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, postcondition: str
+) -> None:
+    from moneybin.errors import UserError
+    from moneybin.services.sync_schedule_native import NativeStatus
+
+    manager = RemovalManager(tmp_path)
+    monkeypatch.setattr(
+        manager.adapter,
+        "inspect",
+        Mock(
+            side_effect=[
+                NativeStatus(False, True, False, False),
+                NativeStatus(
+                    True,
+                    postcondition != "unowned",
+                    postcondition != "inactive",
+                    False,
+                    postcondition == "partial",
+                ),
+            ]
+        ),
+    )
+    with pytest.raises(UserError, match="could not be verified"):
+        manager.adapter.install(manager.job)
+
+
 class RemovalManager:
     """Model native missing-unit failures and cached definitions without jobs."""
 
@@ -168,13 +295,18 @@ def _owned_systemd_registration(manager: RemovalManager) -> Path:
 
 
 @pytest.mark.parametrize("indent", [" ", "  ", "    ", "\t", " \t "])
+@pytest.mark.parametrize("custom", [False, True])
 def test_linux_registration_accepts_indented_exact_target(
-    tmp_path: Path, indent: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, indent: str, custom: bool
 ) -> None:
     home = tmp_path / "schedule home"
     home.mkdir()
+    config = tmp_path / "config space %literal" if custom else home / ".config"
+    if custom:
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
     manager = RemovalManager(home)
     link = _owned_systemd_registration(manager)
+    assert link.parent == config / "systemd/user/graphical-session.target.wants"
     manager.registration = "enabled"
     manager.registration_output = f"enabled\n{indent}{link}\n"
 

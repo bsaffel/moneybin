@@ -1196,6 +1196,12 @@ def sync_pull(
     ),
 ) -> None:
     """Pull data from connected institutions."""
+    if not scheduled and (
+        scheduled_profile_id is not None or scheduled_revision is not None
+    ):
+        raise typer.BadParameter(
+            "--scheduled-profile-id and --scheduled-revision require --scheduled."
+        )
     if scheduled:
         from moneybin.config import CLISettings
 

@@ -396,6 +396,13 @@ must not pull that session target into existence. This is stronger than merely
 running a timer in a user manager that may outlive logout. Keep `WakeSystem`
 disabled and use one service instance per owned job.
 
+Linux unit files use an absolute `XDG_CONFIG_HOME` when configured, otherwise
+`~/.config`; empty or relative values use that default. Preserve the selected
+configuration root through native commands and scheduled child processes.
+The desktop user manager must use the same unit location. Verify loaded paths
+and exact persistent registration after installation; activity alone is not
+success, and a location mismatch must not adopt or remove unrelated jobs.
+
 On macOS, `StartCalendarInterval` already coalesces triggers missed during
 sleep. It does not supply persistent catch-up across unloaded login sessions
 or shutdown. A login/load trigger therefore invokes a small due-check, using
