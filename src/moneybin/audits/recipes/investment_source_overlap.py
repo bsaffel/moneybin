@@ -1,7 +1,7 @@
 """Recipe for the ``investment_source_overlap`` audit (fail).
 
 One investment account fed by two sources at once has no single ledger, so
-``core.dim_holdings`` withholds every figure for it. The remedy is a choice
+``core.dim_holdings`` marks every figure for it unreconciled. The remedy is a choice
 only the user can make: which history to keep. One ``accounts_set`` action per
 source present, both ``suggested`` (design-principles.md, "Magic stays
 visible"); each rationale carries that source's trade count and date range

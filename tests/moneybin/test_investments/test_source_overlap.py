@@ -498,3 +498,20 @@ def test_evidence_phrase(evidence: SourceEvidence, phrase: str) -> None:
 )
 def test_trade_count_phrase(evidence: SourceEvidence, phrase: str) -> None:
     assert trade_count_phrase(evidence) == phrase
+
+
+@pytest.mark.integration
+def test_unreconciled_investment_accounts_counts_overlapping_accounts(
+    db: Database,
+) -> None:
+    from moneybin.investments.source_overlap import unreconciled_investment_accounts
+    from moneybin.services.account_service import AccountService
+    from tests.moneybin.test_investments._overlap_seed import ACCOUNT, seed_overlap
+
+    seed_overlap(db)
+    assert unreconciled_investment_accounts(db) == 1
+
+    AccountService(db).settings_update(
+        ACCOUNT, actor="test", investment_source_type="manual"
+    )
+    assert unreconciled_investment_accounts(db) == 0

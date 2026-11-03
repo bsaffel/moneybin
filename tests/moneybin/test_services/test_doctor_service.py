@@ -6875,3 +6875,23 @@ def test_unproposed_check_skips_without_echoing_the_raw_cause() -> None:
     assert result.detail is not None
     assert "SAFEWAY" not in result.detail
     assert "81.27" not in result.detail
+
+
+@pytest.mark.integration
+def test_overlap_check_sets_reconciliation_gauge_and_marks_unreconciled(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.moneybin.test_investments._overlap_seed import seed_overlap
+
+    seed_overlap(db)
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+
+    assert (
+        REGISTRY.get_sample_value(
+            "moneybin_reconciliation_unreconciled_accounts", {"ledger": "investment"}
+        )
+        == 1.0
+    )
+    detail = result.detail or ""
+    assert "holdings, lots and gains are marked unreconciled" in detail
+    assert "withheld" not in detail
