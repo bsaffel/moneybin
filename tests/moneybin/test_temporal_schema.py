@@ -118,14 +118,14 @@ def test_freshness_epoch_milliseconds_remain_absolute(
     )
     db.execute(
         "CREATE TABLE sqlmesh._intervals "
-        "(name VARCHAR, version VARCHAR, created_ts BIGINT, is_dev BOOLEAN, "
+        "(name VARCHAR, version VARCHAR, created_ts BIGINT, last_altered_ts BIGINT, is_dev BOOLEAN, "
         "is_removed BOOLEAN, is_pending_restatement BOOLEAN)"
     )
     db.execute(
         "INSERT INTO sqlmesh._snapshots VALUES ('core.example', 'v1', 1762061400123, 'FULL')"
     )
     db.execute(
-        "INSERT INTO sqlmesh._intervals VALUES ('core.example', 'v1', 1762061400456, false, false, false)"
+        "INSERT INTO sqlmesh._intervals VALUES ('core.example', 'v1', 1762147800456, 1762061400456, false, false, false)"
     )
     row = db.execute(query.sql(dialect="duckdb")).fetchone()
     assert row is not None
