@@ -66,7 +66,7 @@ dependencies = [
     "python-dotenv>=1.2.4",
     # Google Sheets connector (gsheet domain)
     "google-api-python-client>=2.200.0",
-    "google-auth>=2.58.0",
+    "google-auth>=2.62.0",
     "google-auth-oauthlib>=1.5.0",
     # Also a transitive dep of google-api-python-client, but declared directly
     # because sheets_api.py imports it to build the timeout-bearing Http client —
