@@ -72,7 +72,7 @@ dependencies = [
     # because sheets_api.py imports it to build the timeout-bearing Http client —
     # a future google-api-python-client pin change must not silently break that.
     # Floor is PYSEC-2026-3444 (unbounded gzip/deflate decompression), fixed in 0.32.0.
-    "httplib2>=0.32.0",
+    "httplib2>=0.32.1",
     # Data validation and utilities
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",  # GHSA-4xgf-cpjx-pc3j — fixed in 2.14.2
