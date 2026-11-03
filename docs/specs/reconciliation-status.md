@@ -1,7 +1,7 @@
 # Reconciliation Status
 
-> Last updated: 2026-10-30
-> Status: in-progress
+> Last updated: 2026-11-03
+> Status: implemented
 > Address: M1J.9 (Investments — reconciliation status on derived investment figures)
 > Type: Feature
 > Owns: the `reconciliation_status` column contract shared by `core` models, its
@@ -137,8 +137,11 @@ single-copy event in an overlapping account is wrong. The
 investment-event-matching spec keeps its guard account-level for the same
 reason.
 
-The two existing copies of the predicate are deleted and replaced by reads of
-the column. The doctor's Raw-level detection answers a different question, since
+As shipped, one `account_reconciliation` CTE over the filtered ledger computes
+the status and the account's newest row timestamp (D6) once per account, and
+every row joins it with `IS NOT DISTINCT FROM`, so a ledger row whose
+`account_id` is NULL keeps a status rather than dropping out. The two existing
+copies of the predicate are deleted and replaced by reads of the column. The doctor's Raw-level detection answers a different question, since
 it must fire before any transform, and stays separate.
 
 ### D2. Derived models inherit the marker and publish their figures
@@ -148,8 +151,9 @@ it must fire before any transform, and stays separate.
 `reconciliation_status` and compute every figure as they do today.
 
 In `prep` and `core` the column takes Rule A's string block
-(`.claude/rules/column-ordering.md`), placed beside `currency_code`, with no
-other column moving.
+(`.claude/rules/column-ordering.md`), placed immediately before
+`currency_code`, with no other column moving. `core.dim_holdings` reads it from
+the position's open lots: `unreconciled` when any of them is.
 
 ### D3. #541's holdings blanking is removed
 
@@ -191,29 +195,61 @@ the total are unreconciled and the remedy, and `degraded_reason` is set. This
 applies to `total_market_value` and `market_value_by_currency`, and to any
 summary the CLI or MCP computes over lots or gains.
 
-The CLI text table marks an unreconciled row visibly (for example, a marker
-column or a footnote glyph beside its figures) and prints the warning beneath.
-The exact rendering follows `cli-output-coherence.md`.
+The CLI text table marks an unreconciled row visibly and prints the warning
+beneath. As shipped, `investments holdings`, `investments lots` and
+`investments gains` add a `reconciliation` column to the default column set
+only when at least one rendered row is `unreconciled`; that column reads
+`unreconciled` on such rows and `-` on the rest, so a clean table carries no
+column of dashes. `--output json` always carries `reconciliation_status` on
+every row, whatever the table shows.
 
 ### D5. Lot selection warns
 
 `investments lots select` and `investments_lots_select` keep working for a
 disposal in an unreconciled account. The response carries the same warning and
-remedy, because a selected lot may be one of a duplicated pair.
+remedy, because a selected lot may be one of a duplicated pair. The selection
+is still written. `InvestmentService.select_lots` returns a
+`LotSelectionResult` (`warnings`, `degraded_reason`) that both surfaces
+render.
 
 ### D6. Freshness
 
-A status flip is an input change. Each model's `updated_at` folds the
-account-level overlap timestamp, as `dim_holdings` already does with
-`overlap_observed_at`, and `investment_source_type_changed_at`, so a row moving
-between states never reports an unchanged watermark.
+A status flip is an input change. `core.fct_investment_transactions.updated_at`
+folds `investment_source_type_changed_at` on every row, and on an `unreconciled`
+row also the account's newest row timestamp (`MAX(row_updated_at)` over the
+account's filtered ledger rows), so a second source's event advances every row
+it flags. The derived models inherit those timestamps from the ledger rows they
+read: lots and gains through their per-position `MAX(updated_at)`, currency
+lots and FX gains through the sale event's timestamp, and `core.dim_holdings`
+through its open lots plus its own `investment_source_type_changed_at` term.
+Choosing or clearing a source therefore never reports an unchanged watermark.
+
+**Known limitation: row removal can rewind.** The account-level fold applies
+only while the account is `unreconciled`. When the second source's rows are
+deleted rather than filtered — `import_revert` of the redundant batch, or a
+sync disconnect purge — the account flips to `reconciled`, the fold stops, and
+`updated_at` on its surviving rows, and on the lots, gains, currency lots, FX
+gains and holdings that inherit from them, can fall back to an earlier value.
+The deleted rows leave nothing to fold. Closing it needs a persisted,
+account-scoped deletion time, which those paths do not record today.
+[`core-updated-at-convention.md`](core-updated-at-convention.md) §"Known
+limitation: the investment ledger can rewind when a second source's rows are
+removed" carries the full statement. No current consumer polls these columns as
+an incremental cursor.
 
 ### D7. Bundle export discloses
 
 The bundle inherits the column from `core`. Its manifest also reports, per table
 that carries the column, how many exported rows are `unreconciled`, so a consumer
 reading only the manifest learns that the bundle contains doubled history.
-Versioning follows the existing manifest rules.
+
+As shipped, each manifest table entry whose columns include
+`reconciliation_status` carries `unreconciled_row_count`, counted over the
+exported rows: `0` for a table with no rows or only reconciled rows, absent on a
+table without the column. Today that is `investment_transactions`,
+`investment_lots`, `realized_gains` and `holdings`; the currency-lot and FX-gain
+models are not in the bundle catalog. The field is additive, so
+`ARTIFACT_VERSION` stays `2`.
 
 ### D8. Privacy and catalog
 
@@ -226,7 +262,10 @@ that carries it, at the class used for closed-vocabulary status columns such as
 One gauge, `moneybin_reconciliation_unreconciled_accounts`, labelled by `ledger`
 (`investment` now, `cash` reserved for MB-89). It is refreshed when the
 `investment_source_overlap` doctor check runs, beside
-`INVESTMENT_SOURCE_CHOICE_ACCOUNTS`. `PRICE_RESOLUTION_STATUS_TOTAL` drops its
+`INVESTMENT_SOURCE_CHOICE_ACCOUNTS`, from
+`unreconciled_investment_accounts(db)` in `investments/source_overlap.py`, which
+counts distinct accounts with `unreconciled` ledger rows. A failure to refresh
+it is logged and does not change the check's result. `PRICE_RESOLUTION_STATUS_TOTAL` drops its
 `source_overlap` label (D3).
 
 ### D10. The cash contract, recorded now, built under MB-89
@@ -240,8 +279,12 @@ model: the figure stays published and the row is marked.
 
 - **Rows with no investment parent.** A currency lot opened by a cash conversion
   or a Transfer, and an FX gain consuming only such lots, is `reconciled`. A
-  currency lot's status is that of the investment event that opened it. An FX
-  gain is `unreconciled` when any lot it consumes is.
+  currency lot's status is that of the investment
+  event that opened it. A lot a Transfer moved into another account is
+  `reconciled` even when it descends from an unreconciled sale: the transferred
+  lot is opened by the Transfer, not by the sale. An FX gain is `unreconciled`
+  when the lot it consumes is; an FX gain with no consumed lot (an incomplete
+  disposal) is `reconciled`.
 - **FX `coverage_status`.** `fct_realized_fx_gains.coverage_status`
   (`complete` / `incomplete`) describes missing records. `reconciliation_status`
   describes doubled records. Both columns are kept, because the remedies differ.
@@ -309,14 +352,21 @@ investment account, including a foreign-currency sale, proves that:
 - the clean account's figures are unchanged;
 - Raw row counts are identical before and after.
 
+Shipped as `tests/scenarios/test_investments_reconciliation_status.py`
+(scenario `investments-reconciliation-status`). It also pins that every bundle
+carrier table still has rows after the choice and reports
+`unreconciled_row_count == 0`, so reconciled rows are proven excluded from the
+count.
+
 Gates: `make check`, `make format-sql`, the touched tests, the MCP surface
 snapshot regeneration for changed descriptions, and
 `tests/test_documentation_policy.py`.
 
-## Left to the builder
+## Left to the builder (resolved)
 
-- How to compute the account-scoped flag inside `fct_investment_transactions`,
-  as a window or a CTE, provided it is computed once.
-- The CLI text-table marker's exact form.
-- Manifest field naming for D7, matching the existing manifest's conventions.
-- Test fixture shapes and the scenario persona's details.
+- The account-scoped flag is one CTE in `fct_investment_transactions` (D1).
+- The CLI text-table marker is a conditional `reconciliation` column (D4).
+- The manifest field is `unreconciled_row_count` (D7).
+- The scenario persona is one overlapping account (a duplicated USD buy, a EUR
+  security sale and its conversion back to USD) beside one clean manual
+  account.

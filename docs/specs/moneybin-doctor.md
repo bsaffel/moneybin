@@ -170,20 +170,22 @@ wrong at once. There is no investment dedup to run (transactions have
 future matching child), so no refresh, price pull, or reconciliation clears it.
 Only choosing which source feeds the account's ledger does (below).
 
-`core.dim_holdings` withholds accordingly: every position in such an account
-carries `valuation_status = 'source_overlap'` and publishes no market value,
-unrealized gain, or pricing at all. That status is deliberately **not** spelled
-`withheld` — the four `withheld` clauses each say one position's share count is
-wrong and want it reconciled, and a reader who cannot tell the two apart cannot
-tell which repair applies.
+Every derived row in such an account — ledger, lots, realized gains, holdings,
+and the currency lots and FX gains its foreign-currency sales open — carries
+`reconciliation_status = 'unreconciled'` and keeps publishing its figures, and
+every holdings, lots and gains read warns with the remedy
+([`reconciliation-status.md`](reconciliation-status.md)). The marker is
+deliberately separate from `valuation_status`: the `withheld` clauses each say
+one position's share count is wrong and want it reconciled, and a reader who
+cannot tell the two apart cannot tell which repair applies.
 
 The check reads the RAW tables rather than the ledger, so it still fires before
-a first transform has run — the point at which the withhold does not yet exist.
+a first transform has run — the point at which the marker does not yet exist.
 **The remedy is a setting, not a delete.** The account's
 `investment_source_type` (`accounts set <account> --investment-source-type
 manual|plaid`, or `accounts_set`) picks the one source type whose rows feed its
 ledger; `core.fct_investment_transactions` drops the rest, so the overlap and
-the `source_overlap` withholding clear together. Nothing is deleted, sync keeps
+every row's `unreconciled` marker clear together. Nothing is deleted, sync keeps
 running, and clearing the setting restores both histories. A chosen account is
 skipped by the detector, so neither this check nor the sync warning raises it
 again until the setting is cleared. The recipe emits two `suggested`
@@ -199,9 +201,9 @@ a question of trust with a permanent loss. `sync_disconnect` is deliberately
 **not** offered either. By default it is a remote operation — `SyncService.disconnect_confirmed`
 calls `client.disconnect` and deletes nothing locally, as its own confirmation
 says ("Previously pulled local rows remain") — and this check joins exactly
-those retained rows, as does `core.dim_holdings`'s `source_overlap_accounts`.
+those retained rows, as does the ledger's `reconciliation_status`.
 Following it would cost the user their connection permanently and leave the
-check failing and the holdings withheld, which is worse than no suggestion: a
+check failing and the account unreconciled, which is worse than no suggestion: a
 `RecoveryAction` is a claim that running it fixes the failure. Its purging
 form (`state="absent"`, `--purge`) would clear the check, but it takes the
 whole connection and every account on it, so it is the same permanent loss

@@ -1,0 +1,23 @@
+scenario: investments-reconciliation-status
+description: >
+  One investment account whose history arrives from manual recording and from
+  Plaid (a duplicated USD buy, plus a EUR security sold for EUR proceeds that a
+  conversion back to USD disposes), beside one clean manual-only account. Proves
+  every derived core row of the overlapping account reads unreconciled, the
+  service reads and bundle manifest disclose it, and choosing a source clears
+  it without changing the clean account or any raw row. Expectations are
+  hand-derived from the seeded rows before running the pipeline.
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+
+# Steps are driven by the pytest entry
+# (test_investments_reconciliation_status.py): the investment ledger is seeded
+# directly into raw, then the transform and the source choice run in-process.
+pipeline: []
+
+gates:
+  required_assertions: all
+  required_expectations: all

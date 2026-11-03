@@ -1273,11 +1273,14 @@ rollback. A later refresh retries the rebuild from the same durable membership.
 
 When manual and aggregator investment histories coexist for one Account,
 SyncService warns and system doctor reports the overlap. The account-level
-holdings withholding shipped in #541 remains active with its existing
-opening-bootstrap exclusion and unchanged withheld figures. Slice #526 expands
-the warning and doctor evidence to include Plaid holdings/bootstrap observations
-as well as transaction observations. Detection and withholding have distinct
-predicates: broader detection does not broaden withholding. M1J.7
+guard is `reconciliation_status`
+([`reconciliation-status.md`](reconciliation-status.md)), which replaced the
+holdings withholding shipped in #541: every derived row of the account is
+marked `unreconciled`, keeps its figures, and every read warns with the remedy.
+The predicate keeps #541's opening-bootstrap exclusion. Slice #526 expands the
+warning and doctor evidence to include Plaid holdings/bootstrap observations
+as well as transaction observations. Detection and the marker have distinct
+predicates: broader detection does not broaden the marker. M1J.7
 materialization alone does not remove this safety boundary or make remaining
 unmatched history trustworthy.
 
@@ -1289,7 +1292,7 @@ remaining row is safe.
 Replacing or narrowing the visible-collision guard is a separate promotion
 decision after real-data evidence. It must define the exact state and read
 semantics and prove which unmatched rows can be trusted without double-counting.
-Accepting one investment Match does not clear the shipped holdings withholding.
+Accepting one investment Match does not clear the account's `unreconciled` marker.
 
 Automatic acceptance is also a separate promotion. The first release may
 record which Proposals would have been auto-eligible so first-decision review
