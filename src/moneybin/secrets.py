@@ -714,7 +714,7 @@ class SecretStore:
                 f"Unable to store secret '{name}' in the OS keychain. "
                 f"Configure or unlock a secure OS keychain and retry.{guidance}"
             ) from None
-        logger.debug(f"Stored secret '{name}' in OS keychain")
+        logger.debug("Stored secret in OS keychain")
 
     def delete_key(self, name: str) -> None:
         """Clear a keychain entry; refusal is distinct from absence."""
@@ -750,4 +750,4 @@ class SecretStore:
             raise SecretStorageUnavailableError(
                 f"Secret '{name}' could not be removed — the OS keychain denied access."
             ) from None
-        logger.debug(f"Removed secret '{name}' from OS keychain")
+        logger.debug("Removed secret from OS keychain")

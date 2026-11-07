@@ -66,13 +66,13 @@ dependencies = [
     "python-dotenv>=1.2.4",
     # Google Sheets connector (gsheet domain)
     "google-api-python-client>=2.200.0",
-    "google-auth>=2.58.0",
+    "google-auth>=2.62.0",
     "google-auth-oauthlib>=1.5.0",
     # Also a transitive dep of google-api-python-client, but declared directly
     # because sheets_api.py imports it to build the timeout-bearing Http client —
     # a future google-api-python-client pin change must not silently break that.
     # Floor is PYSEC-2026-3444 (unbounded gzip/deflate decompression), fixed in 0.32.0.
-    "httplib2>=0.32.0",
+    "httplib2>=0.32.1",
     # Data validation and utilities
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",  # GHSA-4xgf-cpjx-pc3j — fixed in 2.14.2
@@ -110,7 +110,7 @@ dependencies = [
     "joserfc>=1.7.6",
     "pillow>=13.0.0",
     "anyio>=4.15.1",
-    "soupsieve>=2.9.2",
+    "soupsieve>=3.0.4",
     "starlette>=1.8.0",
     "certifi>=2026.10.19",
     # Secret management and key derivation
@@ -217,7 +217,7 @@ moneybin = "moneybin.cli.main:main"
 dev = [
     "towncrier>=26.9.0,<27",
     # Code quality and formatting
-    "ruff>=0.17.0",
+    "ruff>=0.17.3",
     "pyright>=1.1.414",
     "pre-commit>=4.7.0",
     "sqlmesh[lsp]>=0.236.3",
@@ -232,11 +232,11 @@ dev = [
     # GHSA-6v7p-g79w-8964 — fixed in 1.2.1.
     "msgpack>=1.2.3",
     # Testing framework and tools
-    "pytest>=9.1.1",
+    "pytest>=9.2.0",
     "pytest-cov>=7.1.0",
     "pytest-json-report>=1.5.0",
     "pytest-mock>=3.16.0",
-    "pytest-asyncio>=1.4.0",
+    "pytest-asyncio>=1.4.1",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
     "pytest-memray>=1.11.0",

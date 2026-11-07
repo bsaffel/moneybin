@@ -57,30 +57,16 @@ WITH snapshots AS (
   WHERE
     rn = 1
 ), executions AS (
-  /* `_intervals` records the intervals a model was actually backfilled over,
-     one row per execution. Unlike `_snapshots.updated_ts` it does not move for
-     metadata-only touches, so it is the surface that distinguishes "this model
-     was rebuilt" from "the environment was promoted". Dev and removed rows are
-     excluded so only prod execution counts, and so are pending-restatement
-     rows: those mark an interval as *owed*, written when a restatement is
-     requested and carrying `created_ts = now` like every other row, with the
-     real interval landing only once the backfill succeeds. SQLMesh's own
-     max-interval read path excludes them for the same reason. Counted here, a
-     restatement that fails mid-backfill would stamp the model as freshly
-     rebuilt over the data the failure left stale.
-
-     Keyed by version as well as name, because an interval belongs to a
-     (name, version) pair — `_intervals.version` is written as
-     `snapshot.version`, and SQLMesh's own accessor is
-     `hydrate_with_intervals_by_version`. A plan records its snapshot rows
-     before backfilling them, so one interrupted in between leaves a current
-     version with no interval beside a previous version that has them; grouped
-     by name alone, the old version's execution is attributed to the new one
-     and content that never ran reports as freshly built. */
+  /* Compaction replaces created_ts without rebuilding the physical table.
+     SQLMesh preserves last_altered_ts, set after evaluation and audit, through
+     compaction. Legacy NULL alteration times remain unknown until a rebuild.
+     Exclude dev, removed, and pending-restatement rows, which cannot prove a
+     completed production execution. Keep the version join: a new unbuilt
+     version must never borrow its predecessor's execution. */
   SELECT
     REGEXP_REPLACE(REPLACE(name, '"', ''), '^[^.]+\.', '') AS model_name,
     version,
-    MAX(created_ts) AS last_executed_ms
+    MAX(last_altered_ts) AS last_executed_ms
   FROM sqlmesh._intervals
   WHERE
     NOT is_dev AND NOT is_removed AND NOT is_pending_restatement
@@ -92,7 +78,7 @@ SELECT
   l.model_name, /* Schema-qualified model name, e.g. 'core.dim_accounts', 'seeds.categories'. */
   MAKE_TIMESTAMPTZ(c.version_first_seen_ms * 1000) AS last_changed_at, /* When the current content version of this model was first materialized. Advances only when model definition or dependencies change. */
   MAKE_TIMESTAMPTZ(l.last_applied_ms * 1000) AS last_applied_at, /* When SQLMesh last wrote to any snapshot row for this model. Underlying source is `_snapshots.updated_ts`, which captures snapshot-record updates (push/touch/unpause/state changes), not strict model-execution events. Advances on every apply; metadata-only touches (restore, environment promotion) also bump it. Use `last_executed_at` for strict "was this model rebuilt?" semantics. */
-  MAKE_TIMESTAMPTZ(e.last_executed_ms * 1000) AS last_executed_at, /* When this model's CURRENT content version was last actually backfilled, from `_intervals.created_ts`. Unlike `last_applied_at` it does NOT advance when the environment is merely promoted, so a selective plan (`transform restate --model`, a seed-only plan) leaves untouched models reading their true age. NULL when the current version has no interval of its own: it was registered but never backfilled, a plan recorded it and failed before the backfill, or the model is symbolic and never executes at all — check `model_kind` to tell the symbolic case apart. An earlier version's intervals are never borrowed to fill this in. UTC, like its siblings here. */
+  MAKE_TIMESTAMPTZ(e.last_executed_ms * 1000) AS last_executed_at, /* Physical execution time for the current version, preserved through interval compaction; NULL when execution evidence is unavailable. */
   c.kind_name AS model_kind /* SQLMesh model kind for the current version: 'FULL', 'VIEW', 'SEED', 'EXTERNAL', 'EMBEDDED', an INCREMENTAL_* variant, etc. 'EXTERNAL' and 'EMBEDDED' are symbolic — SQLMesh never executes them, so their `last_executed_at` is always NULL and freshness consumers must exclude them. NULL for a snapshot written before SQLMesh recorded the kind. */
 FROM latest_per_name AS l
 JOIN current_version_per_name AS c
