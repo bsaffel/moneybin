@@ -202,7 +202,8 @@ def test_accepted_projection_stays_pinned_until_upgrade_replacement_reviewed(
     reopened = InvestmentMatchingService(db)
     result = reopened.run()
     # The versioned predicate needs new review; a locked component keeps its
-    # exact reviewed projection until complete replacement acceptance (spec 441-451).
+    # exact reviewed projection until complete replacement acceptance; see
+    # investment-event-matching.md, "Whole-event assignment".
     assert result.proposed == 1
     pending = reopened.pending()
     assert len(pending) == 1
