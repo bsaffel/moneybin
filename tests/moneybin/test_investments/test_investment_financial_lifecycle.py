@@ -3,7 +3,7 @@
 Each buy is 10 units/$1,000; the one sale is 4 units/$600. With two
 unconsolidated buys, 16 units/$1,600 remain; with one, 6 units/$600 remain.
 Every stage realizes $600-$400=$200, retains $12 income and $3 fees.
-The collision guard still withholds valuation even with a usable $150 close.
+The account stays unreconciled throughout; its $150 close still values it.
 """
 
 from datetime import UTC, date, datetime
@@ -52,6 +52,7 @@ def _bundle_rows(db: Database, name: str) -> list[dict[str, Any]]:
 def _assert_financial_state(db: Database, *, buys: int, report_id: str) -> None:
     remaining = Decimal(10 * buys - 4)
     basis = remaining * 100
+    value = remaining * 150
     assert not projection_pending(db)
     assert db.execute(
         """SELECT SUM(remaining_quantity), SUM(cost_basis_remaining),
@@ -64,17 +65,19 @@ def _assert_financial_state(db: Database, *, buys: int, report_id: str) -> None:
     ).fetchone() == (Decimal(4), Decimal(600), Decimal(400), Decimal(200))
     assert db.execute(
         """SELECT quantity, cost_basis, average_cost, valuation_status,
-                  market_value, unrealized_gain, price_date, price_source
+                  reconciliation_status, market_value, unrealized_gain,
+                  price_date, price_source
            FROM core.dim_holdings"""
     ).fetchone() == (
         remaining,
         basis,
         Decimal(100),
-        "source_overlap",
-        None,
-        None,
-        None,
-        None,
+        "carried_forward",
+        "unreconciled",
+        value,
+        value - basis,
+        date(2026, 1, 21),
+        "plaid",
     )
     assert db.execute(
         """SELECT SUM(amount) FILTER (WHERE type = 'dividend'),
@@ -89,9 +92,9 @@ def _assert_financial_state(db: Database, *, buys: int, report_id: str) -> None:
     assert len(holdings.rows) == 1
     assert holdings.rows[0].quantity == remaining
     assert holdings.rows[0].cost_basis == basis
-    assert holdings.rows[0].market_value is None
+    assert holdings.rows[0].market_value == value
     assert holdings.degraded_reason is not None
-    assert "source_overlap" in holdings.degraded_reason
+    assert "investment_source_overlap" in holdings.degraded_reason
     assert holdings.warnings
 
     transactions = _bundle_rows(db, "investment_transactions")
@@ -100,16 +103,21 @@ def _assert_financial_state(db: Database, *, buys: int, report_id: str) -> None:
         row["amount"] for row in transactions if row["type"] == "buy"
     ) == Decimal(-1000 * buys)
     assert [
-        (r["quantity"], r["cost_basis"], r["market_value"], r["valuation_status"])
+        (
+            r["quantity"],
+            r["cost_basis"],
+            r["market_value"],
+            r["reconciliation_status"],
+        )
         for r in _bundle_rows(db, "holdings")
-    ] == [(remaining, basis, None, "source_overlap")]
+    ] == [(remaining, basis, value, "unreconciled")]
     gains = _bundle_rows(db, "realized_gains")
     assert sum(row["gain_loss"] for row in gains) == Decimal(200)
     assert sum(row["cost_basis"] for row in gains) == Decimal(400)
     report = ExportService(db).prepare_report(
         profile="test", report_id=report_id, redaction_mode="unredacted"
     )
-    assert report.tables[0].rows == ((remaining, basis, None, "source_overlap"),)
+    assert report.tables[0].rows == ((remaining, basis, value, "unreconciled"),)
 
 
 def test_real_transform_accept_replace_and_audit_undo_restate_exact_finances(
@@ -144,7 +152,8 @@ def test_real_transform_accept_replace_and_audit_undo_restate_exact_finances(
     assert built.applied, built.error
     report = UserReportsService(db).create(
         name="lifecycle_position",
-        query_sql="""SELECT quantity, cost_basis, market_value, valuation_status
+        query_sql="""SELECT quantity, cost_basis, market_value,
+                            reconciliation_status
                      FROM core.dim_holdings""",
         actor="test",
     )
