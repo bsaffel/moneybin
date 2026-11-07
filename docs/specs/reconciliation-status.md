@@ -37,7 +37,7 @@ accepted Match:
 |---|---|
 | `core.dim_holdings` | Blanks five valuation figures under `valuation_status = 'source_overlap'` (#541); `quantity` and `cost_basis` still publish the doubled figures |
 | `core.fct_investment_lots`, `core.fct_realized_gains` | Every figure published, no marker |
-| `core.fct_currency_lots`, `core.fct_realized_fx_gains` | A duplicated foreign-currency security sale opens a duplicate currency lot (`currency_lots/sqlmesh_loader.py:1144`), so FX gains double too, with no marker |
+| `core.fct_currency_lots`, `core.fct_realized_fx_gains` | A duplicated foreign-currency security sale opens a duplicate currency lot (`currency_lots/sqlmesh_loader.py:1171`), so FX gains double too, with no marker |
 | CLI and MCP holdings, lots and gains reads | `degraded_reason` warning with the remedy (`investment_service.py:1829`) |
 | Portfolio total (`total_market_value`) | Sums only valued positions, so an overlapping account's blanked positions silently drop out (`investment_service.py:2083`) |
 | Bundle export (`exports/catalog.py:59-62`) and `sql_query` | No marker and no warning |
@@ -152,7 +152,9 @@ since it must fire before any transform, and stays separate.
 As shipped, one `account_reconciliation` CTE over the filtered ledger computes
 the status and the account's newest row timestamp (D6) once per account, and
 every row joins it with `IS NOT DISTINCT FROM`, so a ledger row whose
-`account_id` is NULL keeps a status rather than dropping out.
+`account_id` is NULL keeps a status rather than dropping out. That join is
+defensive: main publishes no ledger row for an account without a canonical
+account row, so no test reaches it.
 
 ### D2. Derived models inherit the marker and publish their figures
 

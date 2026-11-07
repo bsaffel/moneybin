@@ -1976,10 +1976,9 @@ def test_an_overlap_flip_advances_the_row_watermark(
     contract ``core-updated-at-convention.md`` sets and this model's own column
     comment repeats — would keep serving the pre-flip figure.
 
-    The held security here has no price and no broker snapshot, so the only
-    other candidate timestamps are its own lot's and the account-level overlap
-    input's. The equality below can therefore only hold if the overlap input is
-    folded in.
+    The held security here has no price and no broker snapshot, so its lot
+    is the only candidate timestamp. The equality below can therefore only
+    hold if the ledger folds the account's newest row into the lot.
     """
     db = valuation_cases.db
     account_id = _case_account("overlap_watermark")
@@ -2006,7 +2005,7 @@ def test_an_overlap_flip_advances_the_row_watermark(
     ).fetchone()
     assert lot_row is not None
 
-    # Preconditions: the scenario really is "the row's own inputs did not move".
+    # Preconditions: the flip came from the sibling, not from A's own events.
     assert status == "unreconciled", "the sibling event did not flip this row"
     # The lot itself inherits the ledger's account-level fold (D6), so it already
     # carries the second source's time; dim_holdings must pass that through.
