@@ -169,7 +169,7 @@ def test_a_requested_restatement_does_not_count_as_an_execution() -> None:
         # version truthful — so this fixture can only be caught by the
         # pending-restatement filter, never by the (name, version) join — and
         # mirrors how SQLMesh writes the row: identifier and dev_version NULL,
-        # a fresh created_ts, nothing else changed.
+        # fresh creation and alteration timestamps, nothing else changed.
         db.execute(
             f"""
             INSERT INTO sqlmesh._intervals
@@ -177,6 +177,8 @@ def test_a_requested_restatement_does_not_count_as_an_execution() -> None:
                 'probe_pending_restatement' AS id,
                 (SELECT MAX(created_ts) + 86400000 FROM sqlmesh._intervals)
                     AS created_ts,
+                (SELECT MAX(last_altered_ts) + 86400000 FROM sqlmesh._intervals)
+                    AS last_altered_ts,
                 CAST(NULL AS TEXT) AS identifier,
                 CAST(NULL AS TEXT) AS dev_version,
                 TRUE AS is_pending_restatement
