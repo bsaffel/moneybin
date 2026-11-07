@@ -68,7 +68,14 @@ def _position(db: Database) -> dict[str, dict[str, Any]]:
     )
     seed_plaid_event(db, "buy", quantity="2", amount="200")
     seed_plaid_event(
-        db, "sell", type_="sell", subtype="sell", quantity="-2", amount="-300", day=20
+        db,
+        "sell",
+        type_="sell",
+        subtype="sell",
+        quantity="-2",
+        amount="-300",
+        price="150",
+        day=20,
     )
     _snapshot(db, "first", [("native_account", "3", "30")])
     built = TransformService(db).apply()
