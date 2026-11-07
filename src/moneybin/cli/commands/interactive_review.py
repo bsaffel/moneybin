@@ -444,6 +444,7 @@ def apply_decision(item: ReviewItem, action: str, policy: TerminalPolicy) -> boo
             merge_drift_check,
             report_rematch,
         )
+        from moneybin.orchestration.refresh import step_outcome
         from moneybin.services.account_links_service import AccountLinksService
 
         approved = confirm_merge(decision_id, target) if target is not None else None
@@ -462,7 +463,9 @@ def apply_decision(item: ReviewItem, action: str, policy: TerminalPolicy) -> boo
         for note in report_rematch(rematch):
             typer.echo(note, err=True)
         # The merge is durable even when its follow-up refresh fails.
-        if rematch is not None and rematch.error is not None:
+        if rematch is not None and (
+            rematch.error is not None or step_outcome(rematch).transform_blocked
+        ):
             typer.echo("Account decision saved; follow-up rebuild failed.", err=True)
             raise SavedDecisionError()
         return True

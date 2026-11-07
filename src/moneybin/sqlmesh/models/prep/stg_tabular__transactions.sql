@@ -6,9 +6,9 @@ MODEL (
 /* category and subcategory are nulled out when blank for the reason
    stg_plaid__accounts states for its own free-text columns, and the reason
    currency below already is: '' passes a NULL check while rendering as a
-   malformed label. Here the NULL check that matters is
-   the queue filter's `category IS NULL` — a category of spaces hides a
-   transaction nobody ever categorized from the list built to surface it.
+   malformed label. Here the NULL check that matters is the one
+   `categories mappings pending` applies before offering a term: a category of
+   spaces would be offered as a term nobody can read, and mapped as one.
 
    These two use a regex rather than the bare TRIM their siblings use, because
    they are the only staging columns with a Python-side counterpart that has to

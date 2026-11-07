@@ -31,5 +31,5 @@ contracts. No release date or hosted-security claim is made by this document.
 ## Related Decisions
 
 - [ADR-002: Privacy Tiers](../decisions/002-privacy-tiers.md)
-- [ADR-004: E2E Encryption](../decisions/004-e2e-encryption.md)
+- [ADR-004: E2E Encryption](../decisions/004-e2e-encryption.md) — historical superseded proposal
 - [ADR-005: Security Tradeoffs](../decisions/005-security-tradeoffs.md)

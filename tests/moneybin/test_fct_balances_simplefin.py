@@ -104,7 +104,8 @@ def test_historical_report_retains_malformed_balance_correction(db: Database) ->
         ]
         load(db, data, job=number, day=number)
     bind_account(db)
-    materialize(db)
+    applied = TransformService(db).apply()
+    assert applied.applied, applied.error
     parameters = {"from_date": "2026-09-20", "to_date": "2026-09-20"}
 
     result = get_report_catalog().execute(
@@ -139,7 +140,12 @@ def test_historical_report_retains_malformed_balance_correction(db: Database) ->
         )
     ]
     load(db, correction, job=4, day=4)
-    TransformService(db).restate_models(["core.fct_balances_daily"])
+    # The delivery also appends Account evidence, so its binding inputs need rebuilding.
+    assert db.execute(
+        "SELECT COUNT(DISTINCT batch_id) FROM raw.simplefin_accounts"
+    ).fetchone() == (4,)
+    applied = TransformService(db).apply()
+    assert applied.applied, applied.error
     corrected = get_report_catalog().execute(
         db,
         report_id="core:net_worth_accounts",

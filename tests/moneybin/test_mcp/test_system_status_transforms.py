@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+from typing import Any
 
 import pytest
 
@@ -129,19 +130,17 @@ async def test_system_status_action_hint_for_schema_drift(mcp_db: object) -> Non
 def test_check_schema_at_boot_self_heals_drift(mcp_db: object, mocker: object) -> None:
     """Drift triggers one apply() attempt and boot completes when it resolves."""
     from moneybin.mcp.server import check_schema_at_boot
-    from moneybin.services.transform_service import ApplyResult, TransformService
+    from moneybin.orchestration.refresh import RefreshResult
 
     with get_database(read_only=False) as db:
         db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
 
-    def _fake_apply(svc: TransformService) -> ApplyResult:
+    def _fake_apply(db: Any, **kwargs: Any) -> RefreshResult:
         # Simulate SQLMesh restoring the dropped column.
-        svc._db.execute(  # pyright: ignore[reportPrivateUsage]  # test mock reaches into service
-            "ALTER TABLE core.dim_accounts ADD COLUMN display_name VARCHAR"
-        )
-        return ApplyResult(applied=True, duration_seconds=0.01)
+        db.execute("ALTER TABLE core.dim_accounts ADD COLUMN display_name VARCHAR")
+        return RefreshResult(applied=True, duration_seconds=0.01)
 
-    mocker.patch.object(TransformService, "apply", _fake_apply)  # type: ignore[attr-defined]
+    mocker.patch("moneybin.orchestration.refresh.refresh", _fake_apply)  # type: ignore[attr-defined]
 
     check_schema_at_boot()
 
@@ -153,15 +152,15 @@ def test_check_schema_at_boot_raises_when_heal_does_not_resolve(
     """apply() succeeds but post-verify still finds drift → SchemaDriftError."""
     from moneybin.database import SchemaDriftError
     from moneybin.mcp.server import check_schema_at_boot
-    from moneybin.services.transform_service import ApplyResult, TransformService
+    from moneybin.orchestration.refresh import RefreshResult
 
     with get_database(read_only=False) as db:
         db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
 
-    def _fake_apply(svc: TransformService) -> ApplyResult:
-        return ApplyResult(applied=True, duration_seconds=0.01)
+    def _fake_apply(db: Any, **kwargs: Any) -> RefreshResult:
+        return RefreshResult(applied=True, duration_seconds=0.01)
 
-    mocker.patch.object(TransformService, "apply", _fake_apply)  # type: ignore[attr-defined]
+    mocker.patch("moneybin.orchestration.refresh.refresh", _fake_apply)  # type: ignore[attr-defined]
 
     with pytest.raises(SchemaDriftError, match="persist after auto-heal"):
         check_schema_at_boot()
@@ -174,15 +173,15 @@ def test_check_schema_at_boot_propagates_apply_failure(
     """apply() soft-fails (applied=False) → SchemaDriftError mentions the apply error."""
     from moneybin.database import SchemaDriftError
     from moneybin.mcp.server import check_schema_at_boot
-    from moneybin.services.transform_service import ApplyResult, TransformService
+    from moneybin.orchestration.refresh import RefreshResult
 
     with get_database(read_only=False) as db:
         db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
 
-    def _failing_apply(svc: TransformService) -> ApplyResult:
-        return ApplyResult(applied=False, duration_seconds=0.01, error="PlanError")
+    def _failing_apply(db: Any, **kwargs: Any) -> RefreshResult:
+        return RefreshResult(applied=False, duration_seconds=0.01, error="PlanError")
 
-    mocker.patch.object(TransformService, "apply", _failing_apply)  # type: ignore[attr-defined]
+    mocker.patch("moneybin.orchestration.refresh.refresh", _failing_apply)  # type: ignore[attr-defined]
 
     with pytest.raises(SchemaDriftError, match="Auto-heal failed.*PlanError"):
         check_schema_at_boot()

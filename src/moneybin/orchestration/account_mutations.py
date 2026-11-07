@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from decimal import Decimal
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from moneybin import error_codes, sqlmesh_registry
 from moneybin.database import Database
@@ -13,6 +14,9 @@ from moneybin.services.account_service import AccountService, AccountSettings
 from moneybin.services.audit_service import AuditService
 from moneybin.services.mutation_context import current_operation_id, operation
 from moneybin.services.undo_service import UndoResult, UndoService
+
+if TYPE_CHECKING:
+    from moneybin.investments.source_choice import SourceChoicePreview
 
 
 def _finish_classification(
@@ -78,6 +82,7 @@ def update_account_settings(
     display_name: str | None | object = None,
     default_cost_basis_method: str | None | object = None,
     investment_source_type: str | None | object = None,
+    verify_source_choice: Callable[[SourceChoicePreview], None] | None = None,
     include_in_net_worth: bool | None = None,
     archived: bool | None = None,
 ) -> tuple[AccountSettings, list[dict[str, str]]]:
@@ -100,6 +105,7 @@ def update_account_settings(
             display_name=display_name,
             default_cost_basis_method=default_cost_basis_method,
             investment_source_type=investment_source_type,
+            verify_source_choice=verify_source_choice,
             include_in_net_worth=include_in_net_worth,
             archived=archived,
         )

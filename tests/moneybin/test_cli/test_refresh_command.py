@@ -423,7 +423,7 @@ def test_refresh_names_an_unsupported_pair_and_its_manual_remedy(
     assert out.exit_code == 1
     assert "No exchange rate series is published for JPY/USD" in out.output
     assert "moneybin fx set" in out.output
-    assert "Re-run the failed step" not in out.output
+    assert "moneybin refresh --step rates" not in out.output
     assert "✅ Refresh complete" not in out.output
 
 
@@ -433,7 +433,7 @@ def test_refresh_offers_a_retry_when_a_rate_pair_merely_failed(
     """The negative control on the test above: a failed pair does earn the hint."""
     out = _invoke_refresh(runner, _rates_result(failed=("EUR/USD",)))
 
-    assert "Re-run the failed step" in out.output
+    assert "moneybin refresh --step rates" in out.output
 
 
 def test_refresh_rate_warnings_survive_quiet(runner: CliRunner) -> None:
@@ -459,7 +459,7 @@ def test_refresh_reports_a_pair_whose_rates_were_partly_unusable(
 
     assert out.exit_code == 1
     assert "Exchange rate coverage is short for GBP/USD" in out.output
-    assert "Re-run the failed step" not in out.output
+    assert "moneybin refresh --step rates" not in out.output
     assert "✅ Refresh complete" not in out.output
 
 
@@ -576,7 +576,7 @@ def test_refresh_apply_failure_with_matcher_crash_suppresses_retry_hint(
 
     assert result.exit_code == 1
     assert "Matching step failed" in result.output  # crash still surfaced
-    assert "Re-run the failed step" not in result.output  # retry hint suppressed
+    assert "moneybin refresh --step" not in result.output  # retry hint suppressed
     assert "Failed: apply boom" in result.output
 
 

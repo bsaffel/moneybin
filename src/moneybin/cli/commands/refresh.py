@@ -29,7 +29,7 @@ from moneybin.cli.utils import (
 )
 from moneybin.errors import UserError
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
-from moneybin.services.refresh_outcome import StageOutcome, best_effort
+from moneybin.services.refresh_outcome import StageOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,9 @@ _STAGE_LABELS: dict[str, str] = {
 }
 
 
-def _render_refresh_receipt(result: object, *, partial: bool, retryable: bool) -> None:
+def _render_refresh_receipt(
+    result: object, *, partial: bool, retry_steps: list[str], transform_blocked: bool
+) -> None:
     """Render the pipeline's factual outcome after progress has cleaned up."""
     from moneybin.orchestration.refresh import RefreshResult
 
@@ -56,14 +58,9 @@ def _render_refresh_receipt(result: object, *, partial: bool, retryable: bool) -
     if not isinstance(refresh_result, RefreshResult):
         raise TypeError("refresh receipt requires RefreshResult")
     investment_stage = refresh_result.stage("investment_match")
-    investment_blocked_transform = (
-        refresh_result.error is not None
-        and investment_stage is not None
-        and investment_stage.error is not None
-    )
-    if investment_blocked_transform:
+    if transform_blocked:
         title = f"{terminal.symbols.failure} Refresh failed"
-        outcome = f"Investment planning prevented transform: {refresh_result.error}"
+        outcome = f"Investment planning prevented transform: {investment_stage.error if investment_stage else None}"
     elif refresh_result.error is not None:
         title = f"{terminal.symbols.failure} Refresh failed"
         outcome = f"Failed: {refresh_result.error}"
@@ -84,17 +81,19 @@ def _render_refresh_receipt(result: object, *, partial: bool, retryable: bool) -
             (stage.step, _stage_summary(stage).strip())
             for stage in refresh_result.stages
         )
-    if investment_blocked_transform:
+    if transform_blocked:
         pairs.append(("transform", "Transforms: skipped (investment planning failed)"))
     if refresh_result.error is not None:
         pairs.append((
             "Recovery",
             "Run `moneybin transform status` to inspect derived data.",
         ))
-    elif retryable:
+    elif retry_steps:
         pairs.append((
             "Recovery",
-            "Re-run the failed step or run `moneybin system doctor`.",
+            "Re-run "
+            + ", ".join(f"`moneybin refresh --step {step}`" for step in retry_steps)
+            + " or run `moneybin system doctor`.",
         ))
     elif partial:
         pairs.append((
@@ -216,6 +215,7 @@ def refresh_command(
     """
     from moneybin.adapters.refresh_adapters import (
         refresh_envelope,
+        refresh_step_actions,
     )
     from moneybin.cli.output import render_or_json
     from moneybin.database import get_database
@@ -272,7 +272,7 @@ def refresh_command(
     # cleanly to stdout) so a partial-pipeline failure is never silent. In
     # JSON mode the crash is also in the payload (that step's `stages` entry
     # plus recovery_actions); the stderr warning is the human/operator signal.
-    steps_outcome = step_outcome(result)
+    steps_outcome = step_outcome(result, requested=requested)
     # Sits with the crash warnings, not with the ✅ status line, for the same
     # reason: this is a decision the *user* made being undone, so it survives
     # --quiet and is emitted under --output json too (where the count is also in
@@ -284,19 +284,20 @@ def refresh_command(
     # pair, which no number of refreshes will fill — so it suppresses the ✅
     # without earning the "re-run the failed step" hint below, whose own remedy
     # already rode the warning above.
-    retryable_error = (
-        any(stage.error is not None for stage in best_effort(steps_outcome.stages))
-        or bool(steps_outcome.identity_errors)
-        or bool(steps_outcome.rate_pairs_failed)
-    )
+    retry_steps = [
+        step
+        for action in refresh_step_actions(
+            steps_outcome, apply_failed=result.error is not None
+        )
+        if action.tool == "refresh_run"
+        for step in action.arguments["steps"]
+    ]
     # The rates step is best-effort like the three above, so an unfilled pair
     # suppresses the ✅ for the same reason they do: a success banner printed
     # directly beneath the warning above contradicts it. A discarded rate joins
     # them without joining `retryable_error`: the provider answered, so the same
     # request returns the same unusable value however many times it is re-sent.
-    has_step_error = retryable_error or bool(
-        steps_outcome.rate_pairs_unsupported or steps_outcome.rate_pairs_discarded
-    )
+    has_step_error = steps_outcome.has_failure
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -314,7 +315,8 @@ def refresh_command(
     _render_refresh_receipt(
         result,
         partial=has_step_error,
-        retryable=retryable_error,
+        retry_steps=retry_steps,
+        transform_blocked=steps_outcome.transform_blocked,
     )
     if result.error is not None or has_step_error:
         raise typer.Exit(1)

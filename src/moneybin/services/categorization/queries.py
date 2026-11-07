@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -35,6 +36,7 @@ from moneybin.repositories.categorization_decisions_repo import (
     PENDING_ATTEMPT_PREDICATE,
 )
 from moneybin.services.categorization._shared import (
+    PROVIDER_SOURCE_TYPE,
     did_you_mean,
     plaid_bridge_match_predicate,
     source_category_bridge_match_predicate,
@@ -44,6 +46,7 @@ from moneybin.tables import (
     BRIDGE_CATEGORY_SOURCE_MAP,
     CATEGORIES,
     CATEGORIZATION_RULES,
+    CATEGORY_SOURCE_MAP,
     DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
     INT_TRANSACTIONS_MATCHED,
@@ -112,6 +115,25 @@ class UnmappedSourceTerm:
     subcategory: str | None
     transaction_count: int
     suggestions: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class SourceTermMappingRow:
+    """One curated imported term: mapped to a category, or ignored.
+
+    ``category``/``subcategory`` are the source's term text;
+    ``mapped_category``/``mapped_subcategory`` name the MoneyBin category it
+    maps to. ``category_id`` is ``None`` when the term is ignored.
+    """
+
+    source_type: str
+    source_origin: str
+    category: str
+    subcategory: str | None
+    category_id: str | None
+    mapped_category: str | None
+    mapped_subcategory: str | None
+    updated_at: datetime
 
 
 class CategorizationQueries:
@@ -241,6 +263,41 @@ class CategorizationQueries:
                 suggestions=did_you_mean(str(category), valid_categories),
             )
             for source_type, source_origin, category, subcategory, transaction_count in rows
+        ]
+
+    def list_source_term_mappings(self) -> list[SourceTermMappingRow]:
+        """List curated imported-term mappings, mapped and ignored.
+
+        Reads ``app.category_source_map`` without its provider rows: those
+        are not curated here. A mapped row carries its MoneyBin category from
+        ``core.dim_categories``; an ignored one carries none. Ordered by the
+        term itself.
+        """
+        rows = self._db.execute(
+            f"""
+            SELECT m.source_type, m.source_origin, m.source_category_code,
+                m.source_subcategory_code, m.category_id, c.category,
+                c.subcategory, m.updated_at
+            FROM {CATEGORY_SOURCE_MAP.full_name} AS m
+            LEFT JOIN {CATEGORIES.full_name} AS c ON c.category_id = m.category_id
+            WHERE m.source_type <> ?
+            ORDER BY m.source_type, m.source_origin, m.source_category_code,
+                m.source_subcategory_code
+            """,  # TableRef constants
+            [PROVIDER_SOURCE_TYPE],
+        ).fetchall()
+        return [
+            SourceTermMappingRow(
+                source_type=str(row[0]),
+                source_origin=str(row[1]),
+                category=str(row[2]),
+                subcategory=str(row[3]) if row[3] else None,
+                category_id=str(row[4]) if row[4] is not None else None,
+                mapped_category=str(row[5]) if row[5] is not None else None,
+                mapped_subcategory=str(row[6]) if row[6] is not None else None,
+                updated_at=row[7],
+            )
+            for row in rows
         ]
 
     def _fct_transactions_exists(self) -> bool:
@@ -710,9 +767,9 @@ class CategorizationQueries:
         """Count what needs categorizing, and how much of it already is.
 
         Scoped to ``is_categorizable`` — a coverage figure over rows nobody is
-        ever asked to categorize describes no work. A category counts however
-        it arrived: a row whose source file supplied its own category text is
-        one ``moneybin review`` skips, so coverage has to agree that it is done.
+        ever asked to categorize describes no work. Only a MoneyBin
+        categorization fills ``category``; text a source file supplied counts
+        once a mapping in ``app.category_source_map`` has translated it.
 
         Raises:
             duckdb.CatalogException: the core layer is not built yet.
@@ -769,12 +826,11 @@ class CategorizationQueries:
         # Breakdown by source, over the same population as the three counts
         # above so the buckets still sum to `categorized` — the CLI prints them
         # directly beneath it, and parts that don't reach the whole are the
-        # defect this population change exists to fix. Two consequences of
-        # scoping it that way: a categorization orphaned from its transaction
-        # stops counting as coverage (doctor keeps a separate invariant for
-        # those), and a row whose category came from its source file's own
-        # column gets the `source_supplied` bucket, since it is categorized but
-        # no assignment method describes it.
+        # defect this population change exists to fix. A categorization
+        # orphaned from its transaction therefore stops counting as coverage
+        # (doctor keeps a separate invariant for those). Every categorized row
+        # has an app.transaction_categories row, since core.fct_transactions
+        # takes `category` from nowhere else, so the inner join drops nothing.
         #
         # `categorized_by='rule'` is written by BOTH the rule engine and
         # apply_merchant_categories — the latter deliberately stamps the 'rule'
@@ -794,7 +850,6 @@ class CategorizationQueries:
                 )
                 SELECT
                   CASE
-                    WHEN c.transaction_id IS NULL THEN 'source_supplied'
                     WHEN c.categorized_by = 'rule' AND c.rule_id IS NULL
                          AND c.merchant_id IS NOT NULL
                     THEN 'merchant_map'
@@ -802,7 +857,7 @@ class CategorizationQueries:
                   END AS source,
                   COUNT(*) AS cnt
                 FROM categorizable AS t
-                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS c
+                INNER JOIN {TRANSACTION_CATEGORIES.full_name} AS c
                   ON t.transaction_id = c.transaction_id
                 WHERE t.category IS NOT NULL
                 GROUP BY 1

@@ -12,9 +12,8 @@ is outside Frankfurter's coverage by design -- see
 `synthetic/data/personas/international.yaml`), so every day it is held and
 eligible, `reports.net_worth` is NULL there (fail-closed, per
 `docs/specs/reports-net-worth-sql-surface.md`). Archiving it mid-history --
-through `AccountService.settings_update`, with the wall clock frozen to a date
-inside its balance span, because the service always stamps
-`archived_at = date.today()` -- turns that permanent NULL into a boundary: NULL
+through `AccountService.settings_update`, with the profile calendar date set
+inside its balance span -- turns that permanent NULL into a boundary: NULL
 before archival, priced after. EUR, GBP, and CAD get an explicit rate fixture
 (never a live provider -- scenario tests run offline) so every date after
 archival is fully priced; GBP's fixture carries a four-day Thursday-Friday-
@@ -33,11 +32,11 @@ import asyncio
 import json
 import os
 import subprocess  # noqa: S404  # explicit command list, never shell=True
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from unittest.mock import patch
 
 import pytest
-import time_machine
 from fastmcp import Client, FastMCP
 
 from moneybin.database import Database, get_database, sqlmesh_context
@@ -87,9 +86,7 @@ _DAY_AFTER_ARCHIVED_AT = _ARCHIVED_AT + timedelta(days=1)
 # After archival: AED is excluded; EUR/GBP/CAD/USD are all priced.
 _PRICED_DATE = date(2025, 12, 1)
 
-# The inputs this test writes, restated after the frozen-clock archive so every
-# model downstream of them rebuilds against the real clock; restating an input
-# cascades the way restate_after_write does.
+# Restate both written inputs so the rate fixture reaches every dependent model.
 _RESTATE_MODELS = ["app.account_settings", "raw.exchange_rates"]
 
 
@@ -272,23 +269,15 @@ def test_net_worth_rungs() -> None:
         assert eur_row is not None, "persona must hold exactly one EUR account"
         eur_account_id = str(eur_row[0])
 
-        # AccountService.settings_update always stamps archived_at with
-        # date.today() on the FALSE -> TRUE transition (never a caller value)
-        # -- the spec requires archiving go through the service rather than a
-        # direct column write, so freeze the clock to land that stamp inside
-        # the persona's own history instead of the real "today" (a year past
-        # the persona's 2025-12-31 end). Travel to noon UTC, not a bare date:
-        # time_machine treats a naive date as UTC midnight, which
-        # date.today() reads back one calendar day earlier in a
-        # negative-UTC-offset timezone (verified: bare _ARCHIVED_AT resolved
-        # to 2025-11-14 locally).
-        with time_machine.travel(
-            datetime.combine(_ARCHIVED_AT, datetime.min.time()).replace(hour=12),
-            tick=False,
+        # Control only the archive date; SQLMesh's real refresh must not rewind.
+        with patch(
+            "moneybin.services.profile_settings_service.ProfileSettingsService.today",
+            return_value=_ARCHIVED_AT,
         ):
-            AccountService(db).settings_update(
+            archived_settings, _ = AccountService(db).settings_update(
                 uae_account_id, archived=True, actor="system"
             )
+        assert archived_settings.archived_at == _ARCHIVED_AT
 
         with sqlmesh_context(db) as ctx:
             ctx.plan(restate_models=_RESTATE_MODELS, auto_apply=True, no_prompts=True)

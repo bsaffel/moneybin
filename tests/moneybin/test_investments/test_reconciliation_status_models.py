@@ -13,6 +13,7 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.services.account_service import CLEAR, AccountService
+from moneybin.services.investment_membership_service import InvestmentMembershipService
 from moneybin.services.transform_service import TransformService
 from tests.moneybin.test_investments._overlap_seed import (
     ACCOUNT,
@@ -24,6 +25,7 @@ from tests.moneybin.test_investments._overlap_seed import (
     seed_security,
     seed_snapshot,
 )
+from tests.moneybin.test_investments.comparison_helpers import seed_account_metadata
 
 pytestmark = pytest.mark.integration
 
@@ -118,12 +120,26 @@ def test_source_choice_reconciles_and_clear_reverts(db: Database) -> None:
     before = max(_updated_ats(db))
     service = AccountService(db)
 
-    service.settings_update(ACCOUNT, actor="test", investment_source_type="manual")
+    service.settings_update(
+        ACCOUNT,
+        actor="test",
+        investment_source_type="manual",
+        verify_source_choice=InvestmentMembershipService(db)
+        .preview_source_choice(ACCOUNT, "manual")
+        .verify,
+    )
     assert _statuses(db) == {"reconciled"}
     chosen = max(_updated_ats(db))
     assert chosen > before
 
-    service.settings_update(ACCOUNT, actor="test", investment_source_type=CLEAR)
+    service.settings_update(
+        ACCOUNT,
+        actor="test",
+        investment_source_type=CLEAR,
+        verify_source_choice=InvestmentMembershipService(db)
+        .preview_source_choice(ACCOUNT, None)
+        .verify,
+    )
     assert _statuses(db) == {"unreconciled"}
     assert min(_updated_ats(db)) > chosen
 
@@ -144,14 +160,6 @@ def test_sibling_second_source_event_advances_every_row(db: Database) -> None:
     assert manual > solo
 
 
-def test_row_without_account_row_gets_a_status(db: Database) -> None:
-    seed_security(db)
-    seed_manual_buy(db, account_id="acc_no_dim_row", txn_id="manual_no_dim_buy")
-    _apply(db)
-
-    assert _statuses(db, "acc_no_dim_row") == {"reconciled"}
-
-
 CLEAN = "acc_clean_manual"
 
 
@@ -169,6 +177,7 @@ def _seed_overlap_and_clean(db: Database) -> None:
     seed_manual_buy(db, account_id=ACCOUNT, txn_id="manual_choice_buy")
     seed_manual_sell(db, account_id=ACCOUNT, txn_id="manual_choice_sell")
     seed_plaid_buy(db, loaded_at="2026-02-01 09:00:00")
+    seed_account_metadata(db, CLEAN)
     seed_manual_buy(db, account_id=CLEAN, txn_id="clean_buy")
     seed_manual_sell(db, account_id=CLEAN, txn_id="clean_sell")
     _apply(db)
@@ -193,6 +202,7 @@ def test_lot_figures_are_unchanged_by_the_marker(db: Database) -> None:
         WHERE account_id = ? ORDER BY lot_id
         """
     seed_security(db)
+    seed_account_metadata(db, CLEAN)
     seed_manual_buy(db, account_id=CLEAN, txn_id="clean_buy")
     seed_manual_sell(db, account_id=CLEAN, txn_id="clean_sell")
     _apply(db)

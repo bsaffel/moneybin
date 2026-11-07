@@ -52,3 +52,7 @@ class GrantInfo:
     consent_mode: ConsentMode
     granted_at: datetime
     revoked_at: datetime | None
+    recipient_kind: str = "ai_backend"
+    terms_version: str | None = None
+    approved_via: str | None = None
+    redaction_policy_version: str | None = None

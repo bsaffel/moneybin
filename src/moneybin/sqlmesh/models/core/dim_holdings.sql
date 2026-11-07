@@ -1,4 +1,10 @@
-/* Current positions: the sum of open lots per (account, security). The "now"
+/* One current position per (account_id, security_id), summed from open lots.
+   Account/security joins are many-to-one; position enrichments preserve this key.
+   Sum cost_basis and market_value only within one currency at this snapshot;
+   quantities add only for the same security, never across snapshot dates.
+   Recompute average_cost from summed cost_basis / quantity rather than summing
+   or averaging per-position ratios. Valuation status governs usable values.
+   Current positions: the sum of open lots per (account, security). The "now"
    snapshot with no date dimension, rebuilt on every run. Carries cost basis and,
    since Pillar C, market value and unrealized gain against the most recent close at
    or before today. Uses cost_basis_remaining (not cost_basis_total) because under
@@ -246,6 +252,51 @@ WITH reporting_calendar AS (
   GROUP BY
     h.account_id,
     h.security_id
+), unresolved_currency_positions AS (
+  /* Unpublished quantity evidence cannot silently make a partial position look complete.
+     Accepted Matches retain their immutable bindings and reserve their source identities. */
+  SELECT
+    l.account_id,
+    l.security_id,
+    MAX(COALESCE(m.created_at, p.created_at)) AS observed_at
+  FROM prep.int_investment_events__legs AS l
+  LEFT JOIN app.account_settings AS a
+    ON a.account_id = l.account_id
+  LEFT JOIN prep.stg_manual__investment_transactions AS m
+    ON l.source_type = 'manual'
+    AND m.source_type = l.source_type
+    AND m.source_origin = l.source_origin
+    AND m.source_transaction_id = l.native_reference
+  LEFT JOIN prep.stg_plaid__investment_transactions AS p
+    ON l.source_type = 'plaid'
+    AND p.source_type = l.source_type
+    AND p.source_origin = l.source_origin
+    AND p.investment_transaction_id = l.native_reference
+    AND p.observation_version = l.observation_version
+  WHERE
+    l.has_resolved_identity
+    AND l.currency_code IS NULL
+    AND NOT l.original_investment_transaction_id IS NULL
+    AND NOT l.quantity IS NULL
+    AND l.quantity <> 0
+    AND l.type IN ('buy', 'sell', 'reinvest', 'transfer_in', 'transfer_out', 'split')
+    AND (
+      a.investment_source_type IS NULL OR a.investment_source_type = l.source_type
+    )
+    AND NOT EXISTS(
+      SELECT
+        1
+      FROM app.investment_event_members AS reserved
+      WHERE
+        reserved.retired_at IS NULL
+        AND NOT reserved.decision_id IS NULL
+        AND reserved.source_type = l.source_type
+        AND reserved.source_origin = l.source_origin
+        AND reserved.native_reference = l.native_reference
+    )
+  GROUP BY
+    l.account_id,
+    l.security_id
 ), withheld AS (
   /* Four clauses, none redundant — each guards a failure the others miss. The first
      three are quantity-specific: market value is quantity x price and does not depend
@@ -319,10 +370,14 @@ WITH reporting_calendar AS (
     OR pos.currency_count > 1
     OR (
       pos.currency_count = 1 AND pos.unknown_currency_lots > 0
-    ) AS is_withheld
+    )
+    OR NOT uc.account_id IS NULL AS is_withheld,
+    uc.observed_at AS unresolved_currency_at
   FROM positions AS pos
   LEFT JOIN provider_reported AS pr
     ON pr.account_id = pos.account_id AND pr.security_id = pos.security_id
+  LEFT JOIN unresolved_currency_positions AS uc
+    ON uc.account_id = pos.account_id AND uc.security_id = pos.security_id
 ), usable_price AS (
   /* The latest close for each position, dropped — so the LEFT JOIN below reads NULL and
      the position falls back to 'unpriced' — when the ledger carries a recorded split
@@ -416,8 +471,9 @@ SELECT
     p.updated_at,
     COALESCE(lp.price_updated_at, p.updated_at),
     COALESCE(psf.newest_snapshot_at, p.updated_at),
+    COALESCE(wh.unresolved_currency_at, p.updated_at),
     COALESCE(acct.investment_source_type_changed_at, p.updated_at)
-  ) AS updated_at /* Latest of all per-row input timestamps: the MAX over the position's open lots (which already fold the account-level ledger watermark for an unreconciled account, so reconciliation_status flipping on a sibling position's event advances this row too, and an investment_source_type choice clears an overlap without a rewind), the resolved close's freshness (market_value advances when a newer close lands), and for a broker-reported position the newest snapshot receipt's time (valuation_status flips to 'withheld' when a fresh pull contradicts or omits the position). The snapshot term keys on the position, not the account, so a purely manual holding in a covered account is not advanced by an unrelated pull; and it uses the snapshot RECEIPT (not the per-position claim), so a pull that DROPS a position still advances its watermark. COALESCE folds the LEFT-JOINed price and snapshot timestamps only when present, so an unpriced, manual position falls back to the lot timestamp. Does not advance on idempotent SQLMesh re-applies. The account's investment_source_type_changed_at is folded here too. KNOWN LIMITATION: can fall backwards when import_revert removes an account's second source and the inherited ledger fold stops; see core-updated-at-convention.md */
+  ) AS updated_at /* Latest of all per-row input timestamps: the MAX over the position's open lots (which already fold the account-level ledger watermark for an unreconciled account, so reconciliation_status flipping on a sibling position's event advances this row too, and an investment_source_type choice clears an overlap without a rewind), the resolved close's freshness (market_value advances when a newer close lands), and for a broker-reported position the newest snapshot receipt's time (valuation_status flips to 'withheld' when a fresh pull contradicts or omits the position), and for a position withheld on unpublished currency evidence the newest such evidence time. The snapshot term keys on the position, not the account, so a purely manual holding in a covered account is not advanced by an unrelated pull; and it uses the snapshot RECEIPT (not the per-position claim), so a pull that DROPS a position still advances its watermark. COALESCE folds the LEFT-JOINed price, snapshot and currency-evidence timestamps only when present, so an unpriced, manual position falls back to the lot timestamp. Does not advance on idempotent SQLMesh re-applies. The account's investment_source_type_changed_at is folded here too. KNOWN LIMITATION: can fall backwards when import_revert removes an account's second source and the inherited ledger fold stops; see core-updated-at-convention.md */
 FROM positions AS p
 LEFT JOIN core.dim_accounts AS acct
   ON acct.account_id = p.account_id

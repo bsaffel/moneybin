@@ -523,9 +523,8 @@ class RefreshRunPayload:
     ``error`` is DESCRIPTION (Tier.MEDIUM): a SQLMesh error type name is
     non-PII, but we conservatively classify it as DESCRIPTION since error
     strings in adjacent tooling sometimes embed model paths. It describes a
-    blocking failure — the SQLMesh apply step, or an ``investment_match``
-    crash that kept apply from running at all (a precondition whenever
-    ``transform`` is requested). Every other step reports its own error
+    SQLMesh apply failure only. An ``investment_match`` crash blocks its
+    dependent transform and reports its own error
     inside its ``stages`` entry, so a caller reads one place per step rather
     than a flat field per step.
 

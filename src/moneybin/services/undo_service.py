@@ -19,6 +19,7 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
+from time import perf_counter
 from typing import Literal, cast
 
 from moneybin import error_codes
@@ -31,7 +32,11 @@ from moneybin.metrics.registry import (
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.services.mutation_context import operation
-from moneybin.services.undo_dispatch import is_registered, repo_for
+from moneybin.services.undo_dispatch import (
+    is_registered,
+    repo_for,
+    undo_investment_operation,
+)
 from moneybin.sqlmesh_freshness import (
     fully_restates,
     input_class,
@@ -39,13 +44,18 @@ from moneybin.sqlmesh_freshness import (
     restating_columns,
 )
 from moneybin.tables import (
+    ACCOUNT_LINKS,
+    ACCOUNT_SETTINGS,
     AUDIT_LOG,
     FCT_INVESTMENT_LOTS,
     FCT_INVESTMENT_TRANSACTIONS,
+    INVESTMENT_MATCH_DECISIONS,
     LOT_SELECTIONS,
+    SECURITY_LINKS,
     TableRef,
 )
 from moneybin.temporal import format_utc
+from moneybin.temporal_contract import decode_audit_row, read_audit_temporal_policy
 
 logger = logging.getLogger(__name__)
 
@@ -101,12 +111,13 @@ class OperationDetail:
 
 @dataclass(frozen=True)
 class _Undoability:
-    """The three conditions that decide whether one operation can be undone."""
+    """The conditions that decide whether one operation can be undone."""
 
     can_undo: bool
     blockers: list[str]
     undone_by: str | None
     unresolvable: list[str]
+    unsupported_actions: list[str]
 
 
 @dataclass
@@ -212,12 +223,17 @@ class UndoService:
         value the write path no longer admits, e.g. a pre-existing blank
         category — not retryable; recreate the entity instead).
         """
+        started = perf_counter()
         events = self._audit.events_for_operation(operation_id)
         if not events:
             audit_undo_total.labels(outcome="not_found").inc()
             raise self._not_found_error(operation_id)
         u = self._undoability(operation_id)
-        row_events = self._reversible_events(events)
+        try:
+            row_events = self._reversible_events(events)
+        except UserError as refusal:
+            self._record_refusal_metric(refusal)
+            raise
         if refusal := self._undo_refusal(operation_id, u, events, row_events):
             self._record_refusal_metric(refusal)
             raise refusal
@@ -231,45 +247,55 @@ class UndoService:
         with operation() as undo_op:
             self._db.begin()
             try:
-                if expected_audit_ids is not None:
-                    current_audit_ids = tuple(
-                        event.audit_id
-                        for event in self._audit.events_for_operation(operation_id)
-                    )
-                    if current_audit_ids != expected_audit_ids:
-                        raise UserError(
-                            "The operation changed after the displayed preview. "
-                            "Inspect it again before undoing.",
-                            code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
-                            recovery_actions=[_undo_action(operation_id)],
-                        )
-                undone: list[AuditEvent] = []
-                touched: dict[str, BaseRepo] = {}
-                self._validate_identity_selections(row_events)
-                from moneybin.repositories.manual_investment_transactions_repo import (
-                    ManualInvestmentTransactionsRepo,
+                from moneybin.investments.dependency_publication import (
+                    dependency_publication,
                 )
 
-                for event in row_events:
-                    if (
-                        event.target_schema == "raw"
-                        and event.target_table == "manual_investment_transactions"
-                    ):
-                        ManualInvestmentTransactionsRepo(
-                            self._db, audit=self._audit
-                        ).validate_legacy_event(event)
-                for event in reversed(row_events):
-                    repo = repo_for(
-                        event.target_schema or "",
-                        event.target_table or "",
-                        self._db,
-                        audit=self._audit,
+                with dependency_publication(self._db):
+                    if expected_audit_ids is not None:
+                        current_audit_ids = tuple(
+                            event.audit_id
+                            for event in self._audit.events_for_operation(operation_id)
+                        )
+                        if current_audit_ids != expected_audit_ids:
+                            raise UserError(
+                                "The operation changed after the displayed preview. "
+                                "Inspect it again before undoing.",
+                                code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                                recovery_actions=[_undo_action(operation_id)],
+                            )
+                    undone: list[AuditEvent] = []
+                    touched: dict[str, BaseRepo] = {}
+                    self._validate_identity_selections(row_events)
+                    from moneybin.repositories.manual_investment_transactions_repo import (
+                        ManualInvestmentTransactionsRepo,
                     )
-                    touched.setdefault(type(repo).__name__, repo)
-                    inverse = repo.undo_event(event, actor=actor, in_outer_txn=True)
-                    if inverse is not None:
-                        undone.append(inverse)
-                # Legacy Raw recovery can emit two Link inverses for one event.
+
+                    for event in row_events:
+                        if (
+                            event.target_schema == "raw"
+                            and event.target_table == "manual_investment_transactions"
+                        ):
+                            ManualInvestmentTransactionsRepo(
+                                self._db, audit=self._audit
+                            ).validate_legacy_event(event)
+                    investment_events = undo_investment_operation(
+                        row_events, self._db, actor=actor
+                    )
+                    for event in reversed(row_events):
+                        if event.audit_id in investment_events:
+                            continue
+                        repo = repo_for(
+                            event.target_schema or "",
+                            event.target_table or "",
+                            self._db,
+                            audit=self._audit,
+                        )
+                        touched.setdefault(type(repo).__name__, repo)
+                        inverse = repo.undo_event(event, actor=actor, in_outer_txn=True)
+                        if inverse is not None:
+                            undone.append(inverse)
+                    # Legacy Raw recovery can emit two Link inverses for one event.
                 undone = self._audit.events_for_operation(undo_op)
                 self._db.commit()
             except UserError as e:
@@ -320,6 +346,18 @@ class UndoService:
             f"audit_undo undone_op={operation_id} undo_op={undo_op} "
             f"rows={len(undone)} actor={actor}"
         )
+        from moneybin.services.investment_matching_service import (
+            record_committed_investment_decisions,
+        )
+
+        record_committed_investment_decisions(
+            [
+                ("reversed", bool((event.before_value or {}).get("auto_eligible")))
+                for event in row_events
+                if event.action == "investment_match.accept"
+            ],
+            duration_seconds=perf_counter() - started,
+        )
         restated = _restated_inputs(undone)
         if restated:
             from moneybin.services.restate import restate_after_write
@@ -342,8 +380,6 @@ class UndoService:
             if event.target_table == LOT_SELECTIONS.name
         }
         for event in events:
-            if event.before_value == event.after_value:
-                continue
             if event.target_table not in {
                 "account_links",
                 "account_link_decisions",
@@ -560,8 +596,12 @@ class UndoService:
         if not events:
             raise self._not_found_error(operation_id)
         u = self._undoability(operation_id)
-        source_events = self._reversible_events(events)
-        refusal = self._undo_refusal(operation_id, u, events, source_events)
+        try:
+            source_events = self._reversible_events(events)
+            refusal = self._undo_refusal(operation_id, u, events, source_events)
+        except UserError as error:
+            source_events = []
+            refusal = error
         return OperationDetail(
             operation_id=operation_id,
             events=events,
@@ -579,17 +619,40 @@ class UndoService:
             undo_recovery_actions=refusal.recovery_actions if refusal else None,
         )
 
-    @staticmethod
-    def _reversible_events(events: Iterable[AuditEvent]) -> list[AuditEvent]:
-        """Return event rows whose captured images describe a state change."""
-        return [
-            event
-            for event in events
-            if event.target_id is not None and event.before_value != event.after_value
-        ]
+    def _reversible_events(self, events: Iterable[AuditEvent]) -> list[AuditEvent]:
+        """Compare decoded images while retaining the original audit evidence."""
+        changed: list[AuditEvent] = []
+        try:
+            policy = read_audit_temporal_policy(self._db)
+            for event in events:
+                if event.target_id is None:
+                    continue
+                before = (
+                    decode_audit_row(
+                        event, event.before_value, policy, image_side="before"
+                    )
+                    if event.before_value is not None
+                    else None
+                )
+                after = (
+                    decode_audit_row(
+                        event, event.after_value, policy, image_side="after"
+                    )
+                    if event.after_value is not None
+                    else None
+                )
+                if before != after:
+                    changed.append(event)
+        except ValueError:
+            raise UserError(
+                "Cannot undo: historical timestamps lack unambiguous accepted "
+                "UTC upgrade provenance. Inspect the operation and its upgrade evidence.",
+                code=error_codes.RECOVERY_NO_PATH,
+            ) from None
+        return changed
 
-    @staticmethod
     def _undo_refusal(
+        self,
         operation_id: str,
         undoability: _Undoability,
         events: list[AuditEvent],
@@ -601,9 +664,10 @@ class UndoService:
                 f"Operation {operation_id!r} was already undone by "
                 f"{undoability.undone_by!r}.",
                 code=error_codes.UNDO_ALREADY_UNDONE,
-                recovery_actions=[
-                    _undo_action(undoability.undone_by, confidence="suggested")
-                ],
+                recovery_actions=self._available_undo_actions(
+                    [undoability.undone_by], confidence="suggested"
+                )
+                or None,
             )
         if undoability.unresolvable:
             return UserError(
@@ -611,15 +675,23 @@ class UndoService:
                 f"{', '.join(undoability.unresolvable)}, outside the undoable "
                 "app.* surface — not reversible via undo.",
                 code=error_codes.RECOVERY_NO_PATH,
-                recovery_actions=[_undo_action(b) for b in undoability.blockers]
+                recovery_actions=self._available_undo_actions(undoability.blockers)
                 or None,
+            )
+        if undoability.unsupported_actions:
+            return UserError(
+                f"Operation {operation_id!r} has investment actions without an "
+                "available undo path: "
+                f"{', '.join(undoability.unsupported_actions)}.",
+                code=error_codes.RECOVERY_NO_PATH,
             )
         if undoability.blockers:
             return UserError(
                 f"Operation {operation_id!r} cannot be undone: later operations "
                 "modified the same rows. Undo those first.",
                 code=error_codes.UNDO_CASCADE_BLOCKED,
-                recovery_actions=[_undo_action(b) for b in undoability.blockers],
+                recovery_actions=self._available_undo_actions(undoability.blockers)
+                or None,
             )
         if not source_events:
             if any(event.target_id is not None for event in events):
@@ -662,10 +734,14 @@ class UndoService:
         u = self._undoability(operation_id, liveness)
         if u.can_undo:
             recovery = [_undo_action(operation_id)]
+        elif u.unsupported_actions:
+            recovery = []
         elif u.blockers:
-            recovery = [_undo_action(b) for b in u.blockers]
+            recovery = self._available_undo_actions(u.blockers)
         elif u.undone_by is not None:
-            recovery = [_undo_action(u.undone_by, confidence="suggested")]
+            recovery = self._available_undo_actions(
+                [u.undone_by], confidence="suggested"
+            )
         else:
             recovery = []
         actions = cast("list[str] | None", actions_raw) or []
@@ -704,7 +780,7 @@ class UndoService:
     def _undoability(
         self, operation_id: str, liveness: _UndoLiveness | None = None
     ) -> _Undoability:
-        """Compute the three undo-gating conditions once, for a single operation.
+        """Compute the undo-gating conditions once, for a single operation.
 
         Shared by ``undo`` (which branches on the individual fields to raise its
         specialized errors), ``get``, and ``history``'s per-operation summary — so
@@ -716,12 +792,71 @@ class UndoService:
             liveness = self._build_undo_liveness()
         undone_by = liveness.live_undo_of(operation_id)
         blockers = self._cascade_blockers(operation_id, liveness)
+        original_events = self._audit.events_for_operation(operation_id)
+        if any(event.action == "investment_match.accept" for event in original_events):
+            domain_targets = {
+                (event.target_schema, event.target_table, event.target_id)
+                for event in original_events
+                if event.target_id is not None
+            }
+            blockers = [
+                blocker
+                for blocker in blockers
+                if any(
+                    (event.target_schema, event.target_table, event.target_id)
+                    in domain_targets
+                    and event.action != "investment_match.stale"
+                    and event.target_table
+                    not in {
+                        "investment_event_members",
+                        "investment_match_field_resolutions",
+                    }
+                    for event in self._audit.events_for_operation(blocker)
+                )
+            ]
         targets = self._row_targets(operation_id)
         unresolvable = sorted(
             f"{schema}.{table}"
             for schema, table in targets
             if not is_registered(schema, table)
         )
+        unsupported_actions: list[str] = []
+        if (
+            INVESTMENT_MATCH_DECISIONS.schema,
+            INVESTMENT_MATCH_DECISIONS.name,
+        ) in targets:
+            from moneybin.services.investment_matching_service import (
+                supports_investment_operation_undo,
+            )
+
+            rows = self._db.conn.execute(
+                f"SELECT DISTINCT action FROM {AUDIT_LOG.full_name} "
+                "WHERE operation_id = ? AND target_schema = ? AND target_table = ? "
+                "AND target_id IS NOT NULL "
+                "AND before_value IS DISTINCT FROM after_value",
+                [
+                    operation_id,
+                    INVESTMENT_MATCH_DECISIONS.schema,
+                    INVESTMENT_MATCH_DECISIONS.name,
+                ],
+            ).fetchall()
+            actions = [str(row[0]) for row in rows]
+            dependency_operation = bool(
+                set(targets)
+                & {
+                    (table.schema, table.name)
+                    for table in (ACCOUNT_SETTINGS, ACCOUNT_LINKS, SECURITY_LINKS)
+                }
+            )
+            lifecycle_only = dependency_operation and set(actions) <= {
+                "investment_match.stale"
+            }
+            if (
+                actions
+                and not supports_investment_operation_undo(actions)
+                and not lifecycle_only
+            ):
+                unsupported_actions = sorted(actions)
         # An operation with nothing to reverse — only marker rows (target_id NULL,
         # e.g. a tag.rename matching zero rows) or only no-ops (before == after,
         # e.g. legacy idempotent tag re-adds) — is refused by undo(), so can_undo
@@ -732,28 +867,37 @@ class UndoService:
                 undone_by is None
                 and not blockers
                 and not unresolvable
+                and not unsupported_actions
                 and has_reversible_row
             ),
             blockers=blockers,
             undone_by=undone_by,
             unresolvable=unresolvable,
+            unsupported_actions=unsupported_actions,
         )
 
-    def _has_reversible_row(self, operation_id: str) -> bool:
-        """Whether the operation has at least one row that actually changed state.
+    def _available_undo_actions(
+        self,
+        operation_ids: Iterable[str],
+        *,
+        confidence: Literal["certain", "suggested"] = "certain",
+    ) -> list[RecoveryAction]:
+        """Offer only directly available inverses without following recovery chains."""
+        liveness = self._build_undo_liveness()
+        return [
+            _undo_action(operation_id, confidence=confidence)
+            for operation_id in operation_ids
+            if self._undoability(operation_id, liveness).can_undo
+        ]
 
-        A row is reversible only if it mutated something (``target_id`` set and
-        ``before_value`` distinct from ``after_value``). Markers and no-ops fail
-        both clauses — the same two conditions ``undo()`` filters on before it
-        refuses with ``recovery_no_path``.
-        """
-        row = self._db.conn.execute(
-            f"SELECT 1 FROM {AUDIT_LOG.full_name} "  # AUDIT_LOG is a TableRef constant
-            "WHERE operation_id = ? AND target_id IS NOT NULL "
-            "AND before_value IS DISTINCT FROM after_value LIMIT 1",
-            [operation_id],
-        ).fetchone()
-        return row is not None
+    def _has_reversible_row(self, operation_id: str) -> bool:
+        """Require a proven semantic change before advertising undoability."""
+        try:
+            return bool(
+                self._reversible_events(self._audit.events_for_operation(operation_id))
+            )
+        except UserError:
+            return False
 
     def undone_operation_ids(self, operation_ids: Iterable[str]) -> frozenset[str]:
         """Which of ``operation_ids`` are *currently* reversed (net liveness).

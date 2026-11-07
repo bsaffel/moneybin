@@ -112,7 +112,7 @@ Refuses (exit 1) when a later operation modified the same rows
 undone, when it touched a table outside the undoable app.* surface, or when
 restoring the captured row would write back a value the write path no longer
 admits (``undo_value_inadmissible`` — e.g. a pre-existing blank category).
-The returned ``undo_operation_id`` is itself undoable.
+Redo guidance is shown only when the returned ``undo_operation_id`` is undoable.
 
 Usage: `moneybin system audit undo [OPTIONS] {operation_id}`
 

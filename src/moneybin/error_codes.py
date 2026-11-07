@@ -52,6 +52,9 @@ IMPORT_PARSE_ERROR = "import_parse_error"
 # rung has nothing to structure, nothing to seed, and the text bridge can't read
 # a page image — extraction needs a vision-capable backend (Req 5, smart-import-pdf).
 IMPORT_PDF_NO_TEXT_LAYER = "import_pdf_no_text_layer"
+# `import preview --allow-ai-disclosure` named a request id other than this
+# file's current one (other bytes, AI app, terms or redaction policy).
+IMPORT_PDF_DISCLOSURE_REQUEST_MISMATCH = "import_pdf_disclosure_request_mismatch"
 IMPORT_PREVIEW_BRIDGE_RESPONSE_REQUIRED = "import_preview_bridge_response_required"
 IMPORT_PREVIEW_CHANGED = "import_preview_changed"
 IMPORT_PREVIEW_CHANNEL_CONFLICT = "import_preview_channel_conflict"
@@ -130,6 +133,7 @@ AUDIT_UNBALANCED_TRANSFER = "audit_unbalanced_transfer"
 REFRESH_CATEGORIZE_FAILED = "refresh_categorize_failed"
 REFRESH_MATCH_FAILED = "refresh_match_failed"
 REFRESH_MODEL_FAILED = "refresh_model_failed"
+REFRESH_STALE = "refresh_stale"
 REFRESH_UNKNOWN_STEP = "refresh_unknown_step"
 
 
@@ -333,6 +337,7 @@ INVESTMENT_SOURCE_EXCLUDED = "investment_source_excluded"
 
 PRIVACY_CURSOR_INVALID = "privacy_cursor_invalid"
 PRIVACY_PAGINATION_NOT_ALLOWED = "privacy_pagination_not_allowed"
+PRIVACY_CONSENT_RECIPIENT_UNSUPPORTED = "privacy_consent_recipient_unsupported"
 
 
 # ---------------------------------------------------------------------------

@@ -99,6 +99,42 @@
     note: TEXT
     created_at: TIMESTAMPTZ
     updated_at: TIMESTAMPTZ
+- name: '"moneybin"."app"."investment_event_members"'
+  columns:
+    membership_id: TEXT
+    event_group_id: TEXT
+    investment_transaction_id: TEXT
+    member_kind: TEXT
+    source_event_key: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    native_reference: TEXT
+    observation_version: TEXT
+    semantic_leg_role: TEXT
+    bound_account_id: TEXT
+    bound_security_id: TEXT
+    bound_effective_currency: TEXT
+    currency_source: TEXT
+    account_generation: TEXT
+    security_generation: TEXT
+    currency_generation: TEXT
+    decision_id: TEXT
+    reconstruction_evidence: JSON
+    created_at: TIMESTAMPTZ
+    retired_at: TIMESTAMPTZ
+    projection_changed_at: TIMESTAMPTZ
+- name: '"moneybin"."app"."investment_match_field_resolutions"'
+  columns:
+    resolution_id: TEXT
+    decision_id: TEXT
+    investment_transaction_id: TEXT
+    field_name: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    native_reference: TEXT
+    observation_version: TEXT
+    created_at: TIMESTAMPTZ
+    retired_at: TIMESTAMPTZ
 - name: '"moneybin"."app"."lot_selections"'
   columns:
     investment_transaction_id: TEXT

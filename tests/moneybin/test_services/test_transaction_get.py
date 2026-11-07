@@ -460,10 +460,13 @@ class TestTransactionGet:
             service.get(limit=2, cursor=forged)
 
     @pytest.mark.unit
-    def test_uncategorized_only_includes_source_categorized(self, db: Database) -> None:
-        """uncategorized_only returns rows with source-provided category but no user categorization."""
+    def test_uncategorized_only_is_the_queue_population(self, db: Database) -> None:
+        """A row nobody is asked to categorize is not listed as uncategorized.
+
+        The flag takes the queue's predicate, ``is_categorizable AND category
+        IS NULL``, so a transfer leg with no category stays out of it.
+        """
         create_core_tables_raw(db.conn)
-        # T_src: source-provided category ('Groceries'), categorized_by=NULL (no user/AI/rule)
         db.conn.execute("""
             INSERT INTO core.fct_transactions (
                 transaction_id, account_id, transaction_date, amount,
@@ -473,18 +476,22 @@ class TestTransactionGet:
                 transaction_year, transaction_month, transaction_day,
                 transaction_day_of_week, transaction_year_month,
                 transaction_year_quarter,
-                category, categorized_by, notes, tags, splits
+                category, categorized_by, is_categorizable
             ) VALUES
-            ('T_src', 'A1', '2026-04-01', -25.00, 25.00, 'expense',
-             'Grocery Run', 'DEBIT', false, 'USD', 'plaid',
+            ('T_open', 'A1', '2026-04-01', -25.00, 25.00, 'expense',
+             'Grocery Run', 'DEBIT', false, 'USD', 'csv',
              '2026-04-01', CURRENT_TIMESTAMP,
              2026, 4, 1, 2, '2026-04', '2026-Q2',
-             'Groceries', NULL, NULL, NULL, NULL)
+             NULL, NULL, true),
+            ('T_leg', 'A1', '2026-04-02', -100.00, 100.00, 'expense',
+             'Transfer Out', 'DEBIT', false, 'USD', 'csv',
+             '2026-04-02', CURRENT_TIMESTAMP,
+             2026, 4, 2, 3, '2026-04', '2026-Q2',
+             NULL, NULL, false)
         """)  # test input, not executing SQL
         result = TransactionService(db).get(uncategorized_only=True)
-        assert len(result.transactions) == 1
-        assert result.transactions[0].transaction_id == "T_src"
-        assert result.transactions[0].category == "Groceries"
+        assert [t.transaction_id for t in result.transactions] == ["T_open"]
+        assert result.total_count == 1
 
     @pytest.mark.unit
     def test_filter_by_memo(self, db: Database) -> None:

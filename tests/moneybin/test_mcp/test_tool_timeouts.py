@@ -25,6 +25,13 @@ def _ok_envelope() -> ResponseEnvelope[Any]:
 
 
 @pytest.mark.unit
+def test_investment_recording_uses_the_bounded_rebuild_deadline() -> None:
+    from moneybin.mcp.tools.investments import investments_record
+
+    assert investments_record._mcp_timeout_seconds == 180.0  # type: ignore[attr-defined]  # decorator metadata
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("tool_name", ["accounts_set", "system_audit_undo"])
 async def test_account_processing_uses_the_bounded_long_workflow_deadline(
     monkeypatch: pytest.MonkeyPatch, tool_name: str
@@ -35,7 +42,7 @@ async def test_account_processing_uses_the_bounded_long_workflow_deadline(
     from moneybin.mcp.tools.accounts import accounts_set
     from moneybin.mcp.tools.system import system_audit_undo
     from moneybin.services.account_service import AccountSettings
-    from moneybin.services.undo_service import UndoResult
+    from moneybin.services.undo_service import OperationDetail, UndoResult
 
     monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.05)
     started = threading.Event()
@@ -60,6 +67,20 @@ async def test_account_processing_uses_the_bounded_long_workflow_deadline(
 
     monkeypatch.setattr("moneybin.database.get_database", database_context)
     monkeypatch.setattr("moneybin.mcp.tools.accounts.get_database", database_context)
+    inspect_operation = MagicMock(
+        return_value=OperationDetail(
+            operation_id="op_undo",
+            events=[],
+            can_undo=True,
+            undo_blocked_by=None,
+            unresolvable=None,
+            reversible_source_event_count=1,
+            source_tables=["app.account_settings"],
+            undo_refusal_code=None,
+            undo_refusal_message=None,
+            undo_recovery_actions=None,
+        )
+    )
     call: asyncio.Task[ResponseEnvelope[Any]]
     if tool_name == "accounts_set":
         monkeypatch.setattr(
@@ -71,6 +92,9 @@ async def test_account_processing_uses_the_bounded_long_workflow_deadline(
     else:
         monkeypatch.setattr(
             "moneybin.orchestration.account_mutations.undo_operation", finish_workflow
+        )
+        monkeypatch.setattr(
+            "moneybin.services.undo_service.UndoService.get", inspect_operation
         )
         call = asyncio.create_task(system_audit_undo("op_original"))
     try:
@@ -87,6 +111,7 @@ async def test_account_processing_uses_the_bounded_long_workflow_deadline(
         assert data["account_type"] == "credit"
     else:
         assert data["undo_operation_id"] == "op_undo"
+        inspect_operation.assert_called_once_with("op_undo")
 
 
 @pytest.mark.unit

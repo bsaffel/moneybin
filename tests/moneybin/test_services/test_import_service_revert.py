@@ -113,7 +113,10 @@ def test_revert_manual_investment_deletes_rows_not_orphaned(db: Database) -> Non
     (added to REVERT_TABLES['manual']) — not leave the rows orphaned into
     core.fct_investment_transactions with the batch marked reverted.
     """
+    from tests.moneybin.test_investments.comparison_helpers import seed_account_metadata
+
     create_core_tables(db)
+    seed_account_metadata(db, "acct_brokerage", currency="USD")
     db.execute(
         """
         INSERT INTO core.dim_accounts

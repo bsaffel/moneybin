@@ -1,0 +1,1 @@
+Opening-lot allocations round once at the final cent without floating-point division or intermediate overflow across the supported Decimal range. Daily balance calculations preserve cents across the pandas boundary.

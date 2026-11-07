@@ -37,15 +37,24 @@ TaxonomyCoarsePayload = TaxonomyCategoriesView | TaxonomyMerchantsView
 
 @dataclass(frozen=True, slots=True)
 class TaxonomyStateResult:
-    """One applied taxonomy target in request order."""
+    """One applied taxonomy target in request order.
 
-    kind: Annotated[Literal["category", "merchant"], DataClass.TXN_TYPE]
+    ``categorized`` and ``recategorized`` are set only for a changed
+    ``source_category`` target: transactions the term newly categorized, and
+    those whose earlier categorization from it was withdrawn and re-evaluated.
+    """
+
+    kind: Annotated[
+        Literal["category", "merchant", "source_category"], DataClass.TXN_TYPE
+    ]
     target_id: Annotated[str | None, DataClass.RECORD_ID]
     state: Annotated[
-        Literal["present", "inactive", "absent"],
+        Literal["present", "inactive", "ignored", "absent"],
         DataClass.TXN_TYPE,
     ]
     changed: Annotated[bool, DataClass.AGGREGATE]
+    categorized: Annotated[int | None, DataClass.AGGREGATE] = None
+    recategorized: Annotated[int | None, DataClass.AGGREGATE] = None
 
 
 @row_set("results")

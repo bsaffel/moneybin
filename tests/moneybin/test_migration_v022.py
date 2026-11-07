@@ -22,7 +22,8 @@ _ALL_COLUMNS: tuple[str, ...] = (
 
 @pytest.fixture()
 def migrated_db(db: Database) -> Database:
-    """Database with V022 applied (idempotent on top of init_schemas)."""
+    """The table as V022 alone creates it; later migrations' columns are theirs."""
+    db.execute("DROP TABLE app.ai_consent_grants")
     run_migration(db, migrate)
     return db
 

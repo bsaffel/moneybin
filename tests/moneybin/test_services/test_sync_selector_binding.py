@@ -391,3 +391,49 @@ def test_pull_refuses_unscoped_removals_before_any_ingestion(db: Database) -> No
         "app.sync_job_state",
     ):
         assert db.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)  # noqa: S608  # fixed test table names
+
+
+@pytest.mark.parametrize("account_id", ["plaid-account-1", "unknown-account"])
+def test_exact_item_removal_preserves_account_scope_through_pull(
+    db: Database, account_id: str
+) -> None:
+    data = _cash_plaid_envelope()
+    data.sources[0].batches[0].payload["removed_transactions"] = [
+        {"transaction_id": "prior-transaction", "account_id": account_id}
+    ]
+    db.execute(
+        """
+        INSERT INTO raw.plaid_transactions
+            (transaction_id, account_id, amount, transaction_date,
+             source_file, source_origin)
+        VALUES ('prior-transaction', 'plaid-account-1', 1,
+                DATE '2026-09-01', 'prior', 'plaid-item-1'),
+               ('unrelated-transaction', 'other-account', 1,
+                DATE '2026-09-01', 'prior', 'plaid-item-1')
+        """
+    )
+    service = _service(db, _client(data))
+
+    result = service.pull(provider_item_id="plaid-item-1", refresh=False)
+
+    assert result.transactions_removed == (1 if account_id == "plaid-account-1" else 0)
+    assert result.ack_state == "confirmed"
+    expected = [("unrelated-transaction", "other-account")]
+    if account_id == "unknown-account":
+        expected.insert(0, ("prior-transaction", "plaid-account-1"))
+    assert (
+        db.execute(
+            """
+        SELECT transaction_id, account_id FROM raw.plaid_transactions
+        WHERE transaction_id IN ('prior-transaction', 'unrelated-transaction')
+        ORDER BY transaction_id
+        """
+        ).fetchall()
+        == expected
+    )
+    assert (
+        service.pull(
+            provider_item_id="plaid-item-1", refresh=False
+        ).transactions_removed
+        == 0
+    )

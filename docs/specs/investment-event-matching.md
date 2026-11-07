@@ -496,6 +496,10 @@ A↔B↔C does not independently reject A↔B, A↔C, or B↔C. Changed exact re
 canonical dependencies, normalized evidence, or algorithm version change the
 induced fingerprint and may be reviewed again. Audit undo of the rejection
 removes the constraint and stales affected pending Proposals.
+That removal has no supported inverse in slice 3: audit history and detail
+report its operation as not undoable, including when it contains other reversed
+decisions, and offer no action to undo it again. Reapplying an exclusion requires
+replanning and reviewing a current Proposal rather than restoring old evidence.
 
 Acceptance rereads the latest inputs, reconstructs that connected candidate
 component, recomputes both fingerprints, and reruns its global assignment in the
@@ -623,8 +627,10 @@ The slice-2 implementation exposes `investments matches run`, `pending`, and
 planning does not count unchanged pending rows as suppressed. Persisted evidence
 includes competing alternatives, issued field choices, and replacement context.
 Accepted topology is a required explicit planner input until slice 4 supplies
-authoritative active membership. Slice 3 decision requests and recovery behavior,
-and slice 4 acceptance, reversal, bootstrap, and Golden projection remain pending.
+authoritative active membership. Slice 3 adds audited rejection, operation undo,
+shared field-choice validation, prompt-only MCP batch confirmation, committed
+decision metrics, and stage-owned refresh recovery. Slice 4 acceptance,
+reversal, bootstrap, and Golden projection remain pending.
 
 `competing` is not a sixth status. A competing Proposal is stored as `pending`.
 The planner derives `is_competing` from the same constrained connected-component
@@ -821,6 +827,40 @@ minted Golden leg id. Acceptance and migration repoint every complete stored lot
 selection through the same semantic-leg mapping or block atomically when the
 mapping is incomplete or ambiguous; pre-M1J.7 source-derived transaction ids do
 not receive compatibility forwarding.
+
+### Source choice after accepting Matches
+
+The per-account `investment_source_type` setting constrains eligible evidence
+before field selection. Choosing `manual` or `plaid` preserves accepted Match
+relationships and existing Golden identities. A matched event projects from its
+members of the chosen source type; it is never excluded merely because its
+previous representative came from the other source. Standalone events from the
+other source remain excluded. Stored field choices are retained, apply when
+their evidence is eligible, and become available again when the setting clears.
+Source choice alone does not stale a Match; independent evidence or dependency
+drift still does.
+
+CLI and MCP show the proposed source and each affected event's inclusion,
+dates, quantities, amounts and other changed ledger fields, plus complete lot
+selection remaps. One confirmation covers the complete switch. The shared
+transition builder reconstructs openings and validates every affected selection
+before prompting and again inside the settings transaction. Changed evidence
+invalidates approval; unsafe selections refuse the switch without writes.
+MCP uses payload-bound confirmation, while CLI presents the preview before its
+prompt or explicit `--yes`. Clearing the setting follows the same contract.
+
+### Recording result identity
+
+`record_event` and `record_events` commit each recorded batch atomically, then
+run one prerequisite-aware rebuild per call and return current Golden leg IDs
+in input order. A reinvest returns both semantic-leg IDs. Returned IDs must
+resolve through active exact manual provenance to materialized Core events;
+Raw hashes are never exposed as Golden identities or accepted as aliases.
+
+A rebuild or identity-resolution failure after commit reports that recording
+was saved and requires rebuilding and looking up the saved events. It must not
+mark the import failed, claim rollback, return obsolete source IDs, or invite
+recording the batch again. All-skipped batches do not rebuild.
 
 ### Field fidelity
 
@@ -1045,6 +1085,10 @@ the SQLMesh-only top-level `error` or the cash `match` stage's own `error`. The
 shared adapter carries the stage and recovery action unchanged through
 `sync_pull`, `import_files`, and `import_inbox_sync`.
 
+A deterministic component-size refusal carries its stable error code internally
+and offers no unchanged retry in either actions or prose. Other failed stages
+retain their own recovery actions; transient planner failures remain retryable.
+
 Privacy classification is inherited rather than declared: `RefreshStageRow`
 already classifies `step` and `ran` as TXN_TYPE, `counts` as AGGREGATE, and
 `error` as DESCRIPTION, so the planner adds no new annotated field and cannot
@@ -1123,6 +1167,11 @@ default projection. If individually within-tolerance defaults for quantity,
 price, amount, or fees combine into an incoherent quantity-price-cash result,
 each participating field with more than one eligible exact source value becomes
 an explicit conflict even though its individual difference is within tolerance.
+An existing accounting-field conflict also exposes the other varying observed
+accounting fields, even when the defaults are coherent, so selecting an alternate
+quantity, amount, or fee can retain its corresponding observed price. Otherwise,
+a below-tolerance default could make that source's coherent combination impossible
+to select.
 Allowed choices are only the observed source values. The planner creates a
 pending Proposal only when at least one complete issued-choice combination
 passes the full-event validation; otherwise it reports an unsupported incoherent

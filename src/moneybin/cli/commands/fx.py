@@ -18,9 +18,11 @@ currency that spends them lands with the reports surface.
 from __future__ import annotations
 
 import logging
+import shlex
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
     emit_human_result,
@@ -29,7 +31,13 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import build_rows, build_summary, compose_human_result
+from moneybin.cli.render import (
+    build_next_step,
+    build_rows,
+    build_summary,
+    compose_human_result,
+    render_human_text,
+)
 from moneybin.cli.utils import (
     generated_cli_command,
     get_terminal_policy,
@@ -94,7 +102,9 @@ def fx_rate(
     with handle_cli_errors(cli_actor="fx_rate", payload_type=FxRatePayload):
         # polars is not cold-start cheap
         from moneybin.services.currency_service import (
+            RateUnavailableError,
             build_currency_service,
+            canonical_currency,
         )
         from moneybin.services.profile_settings_service import ProfileSettingsService
 
@@ -106,7 +116,35 @@ def fx_rate(
             if requested is None:
                 requested = ProfileSettingsService(db).today()
             service = build_currency_service(db, actor="fx_rate")
-            resolved = service.resolve_rate(from_currency, to_currency, requested)
+            try:
+                resolved = service.resolve_rate(from_currency, to_currency, requested)
+            except RateUnavailableError as error:
+                if output == OutputFormat.TEXT and error.code in (
+                    error_codes.FX_RATE_UNAVAILABLE,
+                    error_codes.FX_CURRENCY_UNSUPPORTED,
+                ):
+                    policy = get_terminal_policy()
+                    manual_args = (
+                        "fx",
+                        "set",
+                        canonical_currency(from_currency),
+                        canonical_currency(to_currency),
+                        requested.isoformat(),
+                        "<rate>",
+                    )
+                    service_command = shlex.join(("moneybin", *manual_args))
+                    reason = (error.hint or "Record the rate yourself").replace(
+                        f"`{service_command}`", "the command below"
+                    )
+                    error.hint = render_human_text(
+                        build_next_step(
+                            reason,
+                            generated_cli_command(*manual_args),
+                            terminal=policy,
+                        ),
+                        terminal=policy,
+                    ).rstrip("\n")
+                raise
 
     payload = FxRatePayload.from_resolved(resolved)
     if output == OutputFormat.JSON:

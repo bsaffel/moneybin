@@ -352,14 +352,13 @@ def transactions_categorize_stats(
 
     The source breakdown carries one bucket per persisted ``categorized_by``
     value (``user``, ``rule``, ``auto_rule``, ``migration``, ``ml``,
-    ``provider_native``, ``ai``) plus two reporting-only buckets, and sums to
+    ``provider_native``, ``ai``) plus one reporting-only bucket, and sums to
     ``categorized``. Rows written via merchant-pattern matching are split out
     of ``rule`` into ``merchant_map`` so the count reconciles with
     transactions_categorize_rules' rule list, though the persisted
-    ``categorized_by`` value on those rows is still ``rule``. Rows counted as
-    categorized only because their source file supplied category text of its
-    own — a CSV column, a manual entry — have no ``categorized_by`` at all and
-    fall in ``source_supplied``; nobody confirmed those inside MoneyBin.
+    ``categorized_by`` value on those rows is still ``rule``. Category text a
+    source file supplied counts only once a mapping translates it, and then
+    falls in ``provider_native``.
 
     Args:
         include_auto: When True, also return auto-rule health metrics

@@ -2,9 +2,9 @@
 
 Thin wrapper over ``ConsentRepo`` that resolves the backend, validates
 the feature category, and emits a ``privacy.log`` event after each
-mutation (fail-soft, outside the DB transaction). The data-withholding
-enforcement gate is deferred — this service only records and reports
-consent.
+mutation (fail-soft, outside the DB transaction). ``smart-import-parsing``
+is enforced by the PDF disclosure gate (``ai_host`` grants); every other
+category remains record-only until its gate ships.
 """
 
 from __future__ import annotations
@@ -18,9 +18,19 @@ from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.consent import FEATURE_CATEGORIES, ConsentMode, GrantInfo
+from moneybin.privacy.disclosure import (
+    REDACTION_POLICY_VERSION,
+    AIHost,
+    risk_statement,
+    terms_version_for,
+)
 from moneybin.privacy.log import build_consent_event, write_privacy_event
 from moneybin.repositories.consent_repo import ConsentRepo
 from moneybin.services.mutation_context import operation
+
+# Recipient keys of ai_host rows; never valid as an ai_backend name.
+_HOST_KEY_PREFIXES = ("local:", "remote:")
+_HOST_CATEGORY = "smart-import-parsing"
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +117,13 @@ class ConsentService:
         """
         if backend is not None:
             stripped = backend.strip()
+            if stripped.startswith(_HOST_KEY_PREFIXES):
+                raise UserError(
+                    "AI host consent cannot be recorded through a backend name.",
+                    code=error_codes.PRIVACY_CONSENT_RECIPIENT_UNSUPPORTED,
+                    hint="Host consent is granted at an interactive terminal: "
+                    "moneybin privacy grant <category> --recipient <host>.",
+                )
             if not stripped:
                 raise UserError(
                     "Backend cannot be empty.",
@@ -208,6 +225,110 @@ class ConsentService:
             )
         return RevokeResult(backend=resolved_backend, count=count)
 
+    def active_host_grant(self, *, host: AIHost) -> GrantInfo | None:
+        """The remembered consent for this host under current terms, if any."""
+        key = host.recipient_key
+        if key is None:
+            return None
+        for grant in self._repo.list_active():
+            if (
+                grant.recipient_kind == "ai_host"
+                and grant.feature_category == _HOST_CATEGORY
+                and grant.consent_mode == ConsentMode.PERSISTENT
+                and grant.backend == key
+                and grant.terms_version == terms_version_for(host)
+                and grant.redaction_policy_version == REDACTION_POLICY_VERSION
+            ):
+                return grant
+        return None
+
+    def grant_host_consent(
+        self,
+        *,
+        host: AIHost,
+        approved_via: str,
+        actor: str,
+        grant_prompt: str | None = None,
+    ) -> tuple[GrantInfo, bool]:
+        """Remember consent to disclose PDF content to an identified AI host.
+
+        Returns ``(grant, created)``; ``grant_prompt`` is the exact text the
+        person saw (defaults to the shared risk statement).
+        """
+        key = host.recipient_key
+        if key is None:
+            raise ValueError("An unidentified AI host cannot be remembered.")
+        terms_version = terms_version_for(host)
+        # A grant under superseded terms or redaction policy is replaced, not returned as current.
+        stale = [
+            g
+            for g in self._repo.list_active()
+            if g.recipient_kind == "ai_host"
+            and g.feature_category == _HOST_CATEGORY
+            and g.backend == key
+            and (
+                g.terms_version != terms_version
+                or g.redaction_policy_version != REDACTION_POLICY_VERSION
+            )
+        ]
+        if stale and self._repo.revoke(
+            feature_category=_HOST_CATEGORY,
+            backend=key,
+            actor=actor,
+            recipient_kind="ai_host",
+        ):
+            write_privacy_event(
+                build_consent_event(
+                    actor=actor,
+                    action="consent.revoke",
+                    feature_category=_HOST_CATEGORY,
+                    backend=key,
+                    consent_mode=None,
+                )
+            )
+        grant, created = self._repo.grant(
+            feature_category=_HOST_CATEGORY,
+            backend=key,
+            consent_mode=ConsentMode.PERSISTENT,
+            grant_prompt=grant_prompt or risk_statement(host, file_names=[]),
+            actor=actor,
+            recipient_kind="ai_host",
+            terms_version=terms_version,
+            approved_via=approved_via,
+            redaction_policy_version=REDACTION_POLICY_VERSION,
+        )
+        if created:
+            write_privacy_event(
+                build_consent_event(
+                    actor=actor,
+                    action="consent.grant",
+                    feature_category=_HOST_CATEGORY,
+                    backend=key,
+                    consent_mode=ConsentMode.PERSISTENT.value,
+                )
+            )
+        return grant, created
+
+    def revoke_host_consent(self, *, recipient_key: str, actor: str) -> RevokeResult:
+        """Revoke the remembered consent for a host recipient key."""
+        count = self._repo.revoke(
+            feature_category=_HOST_CATEGORY,
+            backend=recipient_key,
+            actor=actor,
+            recipient_kind="ai_host",
+        )
+        if count:
+            write_privacy_event(
+                build_consent_event(
+                    actor=actor,
+                    action="consent.revoke",
+                    feature_category=_HOST_CATEGORY,
+                    backend=recipient_key,
+                    consent_mode=None,
+                )
+            )
+        return RevokeResult(backend=recipient_key, count=count)
+
     def revoke_all(
         self, *, actor: str, expected_grant_ids: set[str] | None = None
     ) -> int:
@@ -261,6 +382,7 @@ class ConsentService:
             grant.feature_category: grant
             for grant in self._repo.list_active()
             if grant.backend == resolved_backend
+            and grant.recipient_kind == "ai_backend"
             and grant.feature_category in normalized
         }
         before = tuple(
@@ -350,6 +472,7 @@ class ConsentService:
                 grant.feature_category
                 for grant in self._repo.list_active()
                 if grant.backend == plan.backend
+                and grant.recipient_kind == "ai_backend"
             )
         )
         return ConsentTargetResult(plan=live, effective_categories=effective)

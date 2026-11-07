@@ -14,10 +14,8 @@ The reinvest CONVENIENCE (writing the acquisition leg + paired income row
 sharing an ``event_group_id``) is a service-layer write helper, unit-covered by
 ``test_investment_service.py::TestReinvestPairing``. The 1099-B scenario seeds
 that pair directly (mirroring the documented two-row shape) and asserts the
-pipeline consumes it correctly — routing through the real
-``InvestmentService.record_event`` is impossible here because it resolves the
-account against ``core.dim_accounts``, which an investment-only account never
-populates (that table is built from cash-transaction sources).
+pipeline consumes it correctly. Synthetic Raw Account metadata supplies the
+canonical Account prerequisite without introducing any balance evidence.
 
 Amounts/quantities are passed as strings and cast in-SQL to their DECIMAL target
 types (never through a float — 1099-B exactness), mirroring the Task-13
@@ -146,13 +144,24 @@ def insert_event(
 ) -> None:
     """Seed one ``raw.manual_investment_transactions`` row (the ledger input).
 
-    ``investment_transaction_id`` doubles as the ``source_transaction_id`` PK —
-    both must be unique per event. The engine hashes the
-    ``investment_transaction_id`` (carried through staging → core) into
-    ``lot_id`` / ``disposal_txn_id`` / ``realized_gain_id``. Decimal columns are
-    cast in-SQL so the exact string value reaches DuckDB without a float
-    round-trip.
+    ``investment_transaction_id`` doubles as the unique Raw source transaction
+    ID. Publication owns the Golden IDs that the cost-basis engine consumes.
+    Decimal columns are cast in-SQL without a float round-trip.
     """
+    db.execute(
+        """
+        INSERT INTO raw.plaid_accounts
+            (account_id, account_type, name, source_file, source_type,
+             source_origin, extracted_at)
+        SELECT ?, 'investment', 'Synthetic Investment Account',
+               'scenario_accounts', 'plaid', 'scenario_metadata', ?::TIMESTAMP
+        WHERE NOT EXISTS (
+            SELECT 1 FROM raw.plaid_accounts
+            WHERE account_id = ? AND source_origin = 'scenario_metadata'
+        )
+        """,
+        [account_id, created_at, account_id],
+    )
     db.execute(
         """
         INSERT INTO raw.manual_investment_transactions

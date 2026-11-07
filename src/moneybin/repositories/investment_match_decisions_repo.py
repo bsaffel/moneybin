@@ -1,4 +1,4 @@
-"""Audited planner-owned pending and stale investment Proposal transitions."""
+"""Audited investment Proposal lifecycle and human rejection transitions."""
 
 import json
 from dataclasses import asdict
@@ -31,7 +31,7 @@ _COLUMNS = (
 
 
 class InvestmentMatchDecisionsRepo(BaseRepo):
-    """Persist immutable review evidence without human-decision methods."""
+    """Keep planner evidence and human decisions in one audited lifecycle."""
 
     repository = "investment_match_decisions"
     table_ref = INVESTMENT_MATCH_DECISIONS
@@ -108,17 +108,22 @@ class InvestmentMatchDecisionsRepo(BaseRepo):
         return proposal_id
 
     def mark_stale(
-        self, proposal_id: str, *, actor: str, in_outer_txn: bool = False
+        self,
+        proposal_id: str,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+        parent_audit_id: str | None = None,
     ) -> bool:
         """Invalidate pending evidence without recording a human decision."""
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._fetch_row(proposal_id)
-            if before is None or before["status"] != "pending":
+            if before is None or before["status"] not in {"pending", "accepted"}:
                 return False
             self._db.execute(
                 f"""UPDATE {INVESTMENT_MATCH_DECISIONS.full_name}
                     SET status = 'stale', updated_at = CURRENT_TIMESTAMP
-                    WHERE proposal_id = ? AND status = 'pending'""",  # noqa: S608  # fixed TableRef; bound value
+                    WHERE proposal_id = ? AND status IN ('pending', 'accepted')""",  # noqa: S608  # fixed TableRef; bound value
                 # fixed TableRef and parameterized value
                 [proposal_id],
             )
@@ -128,8 +133,168 @@ class InvestmentMatchDecisionsRepo(BaseRepo):
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(self._fetch_row(proposal_id)),
                 actor=actor,
+                parent_audit_id=parent_audit_id,
             )
         return True
+
+    def reject(
+        self, proposal_id: str, *, actor: str, in_outer_txn: bool = False
+    ) -> AuditEvent:
+        """Record the first human decision without changing its immutable evidence."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._fetch_row(proposal_id)
+            if before is None or before["status"] != "pending":
+                raise UserError(
+                    "Investment Proposal is stale or no longer pending.",
+                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                )
+            self._db.execute(
+                f"""UPDATE {INVESTMENT_MATCH_DECISIONS.full_name}
+                    SET status = 'rejected', actor = ?,
+                        decided_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                    WHERE proposal_id = ?""",  # noqa: S608  # fixed TableRef; bound values
+                [actor, proposal_id],
+            )
+            return self._emit_audit(
+                action="investment_match.reject",
+                target=(*self._audit_target, proposal_id),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(self._fetch_row(proposal_id)),
+                actor=actor,
+            )
+
+    def accept(
+        self,
+        proposal_id: str,
+        *,
+        actor: str,
+        context: dict[str, Any],
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Publish ratification and its complete prior topology audit reference."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._fetch_row(proposal_id)
+            if before is None or before["status"] != "pending":
+                raise UserError(
+                    "Investment Proposal is no longer pending.",
+                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                )
+            self._db.execute(
+                f"""UPDATE {INVESTMENT_MATCH_DECISIONS.full_name}
+                SET status = 'accepted', actor = ?, decided_at = CURRENT_TIMESTAMP,
+                    accepted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE proposal_id = ?""",  # noqa: S608  # TableRef, bound values
+                [actor, proposal_id],
+            )
+            return self._emit_audit(
+                action="investment_match.accept",
+                target=(*self._audit_target, proposal_id),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(self._fetch_row(proposal_id)),
+                actor=actor,
+                context=context,
+            )
+
+    def supersede(
+        self,
+        proposal_id: str,
+        *,
+        actor: str,
+        parent_audit_id: str,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Retire one complete ratified component under its replacement decision."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._fetch_row(proposal_id)
+            if (
+                before is None
+                or before["status"] not in {"accepted", "stale"}
+                or before["accepted_at"] is None
+            ):
+                raise UserError(
+                    "Prior investment Match is no longer active.",
+                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                )
+            self._db.execute(
+                f"""UPDATE {INVESTMENT_MATCH_DECISIONS.full_name}
+                SET status = 'reversed', actor = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE proposal_id = ?""",  # noqa: S608  # TableRef, bound values
+                [actor, proposal_id],
+            )
+            return self._emit_audit(
+                action="investment_match.supersede",
+                target=(*self._audit_target, proposal_id),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(self._fetch_row(proposal_id)),
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
+
+    def restore_lifecycle(
+        self,
+        proposal_id: str,
+        *,
+        status: str,
+        actor: str,
+        parent_audit_id: str | None = None,
+        undoes_operation_id: str | None = None,
+    ) -> AuditEvent:
+        """Publish a domain-validated reversal or restored ratified component."""
+        if status not in {"accepted", "stale", "reversed"}:
+            raise ValueError("Invalid restored investment lifecycle")
+        before = self._fetch_row(proposal_id)
+        if before is None or before["accepted_at"] is None:
+            raise UserError(
+                "Ratified investment topology is incomplete.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+        self._db.execute(
+            f"""UPDATE {INVESTMENT_MATCH_DECISIONS.full_name}
+                SET status = ?, actor = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE proposal_id = ?""",  # noqa: S608  # fixed TableRef, bound lifecycle
+            [status, actor, proposal_id],
+        )
+        return self._emit_audit(
+            action="investment_match.reverse"
+            if status == "reversed"
+            else "investment_match.restore",
+            target=(*self._audit_target, proposal_id),
+            before=self._serialize_for_audit(before),
+            after=self._serialize_for_audit(self._fetch_row(proposal_id)),
+            actor=actor,
+            parent_audit_id=parent_audit_id,
+            is_undo=undoes_operation_id is not None,
+            undoes_operation_id=undoes_operation_id,
+        )
+
+    def undo_rejection(self, event: AuditEvent, *, actor: str) -> AuditEvent:
+        """Remove a negative constraint inside the domain undo transaction."""
+        before = self._fetch_row(str(event.target_id))
+        if (
+            event.action != "investment_match.reject"
+            or before is None
+            or before["status"] != "rejected"
+            or self._serialize_for_audit(before) != event.after_value
+        ):
+            raise UserError(
+                "Investment rejection no longer matches its audit evidence.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+        self._db.execute(
+            f"""UPDATE {INVESTMENT_MATCH_DECISIONS.full_name}
+                SET status = 'stale', actor = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE proposal_id = ?""",  # noqa: S608  # fixed TableRef; bound values
+            [actor, event.target_id],
+        )
+        return self._emit_audit(
+            action="investment_match.reject.undo",
+            target=(*self._audit_target, event.target_id),
+            before=self._serialize_for_audit(before),
+            after=self._serialize_for_audit(self._fetch_row(str(event.target_id))),
+            actor=actor,
+            is_undo=True,
+            undoes_operation_id=event.operation_id,
+        )
 
     def undo_event(
         self, event: AuditEvent, *, actor: str, in_outer_txn: bool = False

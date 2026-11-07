@@ -26,6 +26,9 @@ Tier derivation summary:
                                      failed list may contain error strings)
   - ``ImportInboxPendingPayload``  → Tier.LOW (filename/account metadata only)
   - ``ImportLabelsSetPayload``     → Tier.MEDIUM (labels = USER_NOTE)
+  - ``ImportAIAssistanceRequiredPayload`` → Tier.LOW (content-free consent
+                                     request: digests, routing reason, host
+                                     and vendor-terms metadata)
   - ``ImportConfirmCoarsePayload`` → Tier.MEDIUM (union max; reject_reason on
                                      ImportPdfBridgeInvalidPayload = DESCRIPTION
                                      and accounts_created[].display_name =
@@ -59,10 +62,65 @@ class ImportConfirmationBridgeTable(TypedDict, total=False):
     rows: list[list[Annotated[str, DataClass.DESCRIPTION]]]
 
 
+class ImportConfirmationAIAssistance(TypedDict):
+    """Content-free notice that a PDF needs AI help; no document content."""
+
+    file_sha256: Annotated[str, DataClass.RECORD_ID]
+    decision_reason: Annotated[str, DataClass.TXN_TYPE]
+    request_kind: Annotated[str, DataClass.TXN_TYPE]
+
+
+class ImportConsentRecipient(TypedDict):
+    """The AI host as it reported itself; static product metadata."""
+
+    host_name: Annotated[str | None, DataClass.TXN_TYPE]
+    host_version: Annotated[str | None, DataClass.TXN_TYPE]
+    identified: Annotated[bool, DataClass.TXN_TYPE]
+    source: Annotated[str, DataClass.TXN_TYPE]
+
+
+class ImportConsentVendorTerms(TypedDict):
+    """Release-shipped vendor data-terms summary; no user data."""
+
+    vendor: Annotated[str, DataClass.TXN_TYPE]
+    retention: Annotated[str, DataClass.TXN_TYPE]
+    training_use: Annotated[str, DataClass.TXN_TYPE]
+    policy_url: Annotated[str, DataClass.TXN_TYPE]
+    plan_caveat: Annotated[str, DataClass.TXN_TYPE]
+    terms_version: Annotated[str, DataClass.TXN_TYPE]
+
+
+class ImportConsentFile(TypedDict):
+    """One PDF awaiting consent: caller-supplied path, digest and routing reason."""
+
+    file: Annotated[str, DataClass.RECORD_ID]
+    file_sha256: Annotated[str, DataClass.RECORD_ID]
+    decision_reason: Annotated[str, DataClass.TXN_TYPE]
+    request_kind: Annotated[str, DataClass.TXN_TYPE]
+
+
+class ImportConsentRequest(TypedDict):
+    """Content-free consent request for PDF disclosure (pdf-disclosure-consent.md §1).
+
+    ``risk_statement`` is the shared consent text naming the host and the
+    caller's file names; it carries no document content.
+    """
+
+    binding_id: Annotated[str, DataClass.RECORD_ID]
+    confirmation_token: Annotated[str | None, DataClass.RECORD_ID]
+    expires_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    risk_statement: Annotated[str, DataClass.TXN_TYPE]
+    recipient: ImportConsentRecipient
+    vendor_terms: ImportConsentVendorTerms | None
+    vendor_terms_unavailable_reason: Annotated[str | None, DataClass.TXN_TYPE]
+    what_is_sent: Annotated[list[str], DataClass.TXN_TYPE]
+    files: list[ImportConsentFile]
+    refusal_reason: Annotated[str | None, DataClass.TXN_TYPE]
+
+
 class ImportConfirmationBridgePayload(TypedDict, total=False):
     """Typed PDF bridge content shared with the import-preview classification."""
 
-    transparency_notice: Annotated[str, DataClass.DESCRIPTION]
     source_file: Annotated[str, DataClass.RECORD_ID]
     document_text: Annotated[str, DataClass.DESCRIPTION]
     tables_preview: list[ImportConfirmationBridgeTable]
@@ -157,6 +215,7 @@ class ImportConfirmationPayload(TypedDict, total=False):
     missing_required: Annotated[list[str], DataClass.TXN_TYPE]
     unmapped_columns: Annotated[list[str], DataClass.TXN_TYPE]
     bridge_payload: ImportConfirmationBridgePayload | None
+    ai_assistance: ImportConfirmationAIAssistance | None
     sign_convention: Annotated[str | None, DataClass.TXN_TYPE]
     sign_prior_convention: Annotated[str | None, DataClass.TXN_TYPE]
     sign_evidence: Annotated[list[str], DataClass.DESCRIPTION]
@@ -213,6 +272,7 @@ class CLIConfirmationRequiredPayload:
     missing_required: Annotated[list[str], DataClass.TXN_TYPE]
     unmapped_columns: Annotated[list[str], DataClass.TXN_TYPE]
     bridge_payload: ImportConfirmationBridgePayload | None
+    ai_assistance: ImportConfirmationAIAssistance | None
     sign_convention: Annotated[str | None, DataClass.TXN_TYPE]
     sign_prior_convention: Annotated[str | None, DataClass.TXN_TYPE]
     sign_evidence: Annotated[list[str], DataClass.DESCRIPTION]
@@ -265,6 +325,9 @@ class ImportPerFileRow:
     # confirmation, so this row is where an agent learns an account came into
     # existence; empty on every re-import, which is the common case.
     accounts_created: list[ImportCreatedAccount] = field(default_factory=list)
+    # A staged preview for a PDF released under disclosure consent, ready for
+    # import_confirm(preview_id=..., bridge_response=...); None otherwise.
+    preview_id: Annotated[str | None, DataClass.RECORD_ID] = None
     # Populated only when status == "confirmation_required": typed detector
     # proposal + samples + flagged + missing_required so nested CRITICAL PDF
     # bridge values receive the same redaction as import_preview.
@@ -308,6 +371,9 @@ class ImportFilesPayload:
     rate_pairs_discarded: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
+    # One consent request covering every PDF in this call that needs AI help;
+    # None when no file is waiting on disclosure consent.
+    consent_request: ImportConsentRequest | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +482,6 @@ class ImportBridgeStatementPayload(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    transparency_notice: Annotated[str, DataClass.DESCRIPTION]
     source_file: Annotated[str, DataClass.RECORD_ID]
     document_text: Annotated[str, DataClass.DESCRIPTION]
     tables_preview: list[ImportBridgeTablePreview]
@@ -497,11 +562,31 @@ class ImportPdfSignPreviewPayload(BaseModel):
     sign_sample_rows: list[ImportPdfSignSample]
 
 
+@row_set(NO_ROW_SET)
+class ImportAIAssistanceRequiredPayload(BaseModel):
+    """A PDF needs AI help; nothing from the document is in this payload.
+
+    Not staged: there is nothing to confirm until consent releases content.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["pdf_ai_assistance"], DataClass.TXN_TYPE] = (
+        "pdf_ai_assistance"
+    )
+    status: Annotated[Literal["ai_assistance_required"], DataClass.TXN_TYPE] = (
+        "ai_assistance_required"
+    )
+    channel: Annotated[Literal["pdf"], DataClass.TXN_TYPE] = "pdf"
+    consent_request: ImportConsentRequest
+
+
 ImportPreviewCoarsePayload = Annotated[
     ImportTabularPreviewCoarsePayload
     | ImportPdfBridgePreviewPayload
     | ImportPdfDirectPreviewPayload
-    | ImportPdfSignPreviewPayload,
+    | ImportPdfSignPreviewPayload
+    | ImportAIAssistanceRequiredPayload,
     Field(discriminator="kind"),
 ]
 
@@ -998,6 +1083,7 @@ class ImportConfirmRequiredPayload(BaseModel):
         default_factory=list
     )
     bridge_payload: ImportConfirmationBridgePayload | None = None
+    ai_assistance: ImportConfirmationAIAssistance | None = None
     account_proposals: list[ImportConfirmationAccountProposal] = Field(
         default_factory=list
     )

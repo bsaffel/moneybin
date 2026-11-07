@@ -7,19 +7,7 @@ paths: ["src/moneybin/extractors/**", "src/moneybin/connectors/**"]
 
 ## Day-Boundary Extraction
 
-Only extract complete days. Calculate range from last extraction date to yesterday. Partial-day extraction breaks idempotency — re-running the same extraction later in the day would pick up new transactions, producing different record counts and content hashes that defeat dedup.
-
-```python
-def get_incremental_date_range(
-    access_token: str,
-) -> tuple[datetime | None, datetime | None]:
-    last = get_last_extraction_date(access_token)
-    yesterday = datetime.now().date() - timedelta(days=1)
-    if last:
-        start = last + timedelta(days=1)
-        return (start, yesterday) if start <= yesterday else (None, None)
-    return (today - timedelta(days=lookback_days), yesterday)
-```
+Only extract complete days: the range runs from the day after the last extraction through the last complete day, and is empty when no new complete day exists. Partial-day extraction breaks idempotency — re-running the same extraction later in the day would pick up new transactions, producing different record counts and content hashes that defeat dedup. Resolve "complete day" per `design-principles.md` → "Time": never from the host clock's local date.
 
 ## Incremental by Default
 
@@ -34,19 +22,6 @@ def get_incremental_date_range(
 | Extraction | Track last extraction dates, skip redundant API calls |
 | Loading | Unique IDs (`transaction_id`) prevent duplicate inserts |
 | Storage | Allow duplicate raw files; deduplicate at database level |
-
-## Loading Patterns
-
-```sql
--- Incremental: insert only new records
-INSERT INTO transactions
-SELECT * FROM read_parquet('data/*.parquet')
-WHERE transaction_id NOT IN (SELECT transaction_id FROM transactions);
-
--- Full refresh
-CREATE OR REPLACE TABLE transactions AS
-SELECT * FROM read_parquet('data/*.parquet');
-```
 
 ## Parameter Design
 

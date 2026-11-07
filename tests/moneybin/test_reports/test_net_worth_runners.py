@@ -17,7 +17,7 @@ import typer
 from typer.testing import CliRunner
 
 from moneybin.database import Database
-from moneybin.errors import UserError
+from moneybin.errors import NextStep, UserError
 from moneybin.reports._framework.catalog import get_report_catalog
 from moneybin.reports._framework.contract import ReportQuery, ReportSpec, bound_value
 from moneybin.reports.definitions._shared import (
@@ -755,8 +755,10 @@ def test_net_worth_variants_disclose_unprojected_scope(
     assert "unresolved_identity" in {reason["kind"] for reason in coverage["reasons"]}
 
 
+@pytest.mark.parametrize("home_currency", [None, "USD"])
 def test_source_metadata_survives_fx_fallback_drift_and_truncation(
     model_db: Database,
+    home_currency: str | None,
 ) -> None:
     from moneybin.reports._framework.catalog import ReportCatalog, ReportStatus
     from tests.moneybin.test_extractors.test_simplefin_extractor import load, source
@@ -766,6 +768,8 @@ def test_source_metadata_survives_fx_fallback_drift_and_truncation(
     _account(model_db, "visible-eur", "Synthetic EUR", "EUR")
     _balance(model_db, "visible-usd", "2026-09-20", "100.00", "USD")
     _balance(model_db, "visible-eur", "2026-09-20", "200.00", "EUR")
+    if home_currency is not None:
+        _home(model_db, home_currency)
     _install_report(model_db, "net_worth_accounts")
     load(model_db, source())
     spec = get_report_catalog().resolve("core:net_worth_accounts")
@@ -793,8 +797,29 @@ def test_source_metadata_survives_fx_fallback_drift_and_truncation(
     assert "Synthetic saved definition drift" in result.degraded_reason
     assert "unresolved_identity" in result.degraded_reason
     assert "EUR->GBP is unfetched" in result.degraded_reason
-    assert "moneybin profile set display_currency_targets GBP" in result.degraded_reason
-    assert "'moneybin refresh'" in result.degraded_reason
+    if home_currency is None:
+        assert (
+            "no home currency or display currency targets are configured"
+            in result.degraded_reason
+        )
+        assert any(
+            isinstance(action, NextStep)
+            and action.cli == ("profile", "set", "display_currency_targets", "GBP")
+            and action.required
+            for action in result.actions
+        )
+        assert any(
+            isinstance(action, NextStep)
+            and action.cli == ("refresh",)
+            and action.required
+            for action in result.actions
+        )
+    else:
+        assert (
+            "moneybin profile set display_currency_targets GBP"
+            in result.degraded_reason
+        )
+        assert "'moneybin refresh'" in result.degraded_reason
     assert result.records[0]["currency_code"] == "EUR"
     assert result.records[0]["account_balance"] == Decimal("200.00")
     assert (

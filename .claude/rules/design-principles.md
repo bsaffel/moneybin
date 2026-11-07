@@ -170,6 +170,14 @@ historical provenance; no permanent converter ships. Verify temporal changes
 across UTC and non-UTC zones, DST boundaries, date-only inputs and strict
 provenance-aware replay.
 
+## Durable data semantics
+
+For ingestion or warehouse changes, read the relevant source spec and
+[database](database.md), [identity](identifiers.md), and [report](reports.md)
+rules. Warehouse contracts define
+[grain and aggregation](../../docs/specs/architecture-shared-primitives.md#grain-keys-joins-and-aggregation)
+and [clock selection](../../docs/specs/core-updated-at-convention.md#distinct-clocks).
+
 ## Depth
 
 Evolving a locked public contract, milestone addressing (`M{phase}{letter}.{n}`), what it does NOT mean, the worked example, and the ADR bar:

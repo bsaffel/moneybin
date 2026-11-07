@@ -147,11 +147,15 @@ class ManualInvestmentTransactionsRepo(BaseRepo):
             policy = read_audit_temporal_policy(self._db)
             before = cast(
                 dict[str, Any],
-                self._serialize_for_audit(decode_audit_row(event, before, policy)),
+                self._serialize_for_audit(
+                    decode_audit_row(event, before, policy, image_side="before")
+                ),
             )
             after = cast(
                 dict[str, Any],
-                self._serialize_for_audit(decode_audit_row(event, after, policy)),
+                self._serialize_for_audit(
+                    decode_audit_row(event, after, policy, image_side="after")
+                ),
             )
         except ValueError:
             raise UserError(
@@ -200,13 +204,14 @@ class ManualInvestmentTransactionsRepo(BaseRepo):
                 in_outer_txn=in_outer_txn,
             )
         self.validate_legacy_event(event)
-        if event.before_value == event.after_value:
-            return None
-        if event.before_value is None:
+        if event.before_value is None or event.after_value is None:
             raise UserError(
                 "Historical manual mutation has no supported identity recovery path.",
                 code=error_codes.RECOVERY_NO_PATH,
             )
+        # Validation already proved every non-Security field semantically equal.
+        if event.before_value["security_id"] == event.after_value["security_id"]:
+            return None
         return self.repoint_security(
             source_transaction_id=str(event.target_id),
             new_security_id=str(event.before_value["security_id"]),

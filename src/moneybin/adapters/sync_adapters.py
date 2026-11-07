@@ -14,7 +14,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from moneybin.adapters.refresh_adapters import refresh_steps_fields
+from moneybin.adapters.refresh_adapters import (
+    refresh_investment_hints,
+    refresh_step_actions,
+    refresh_steps_fields,
+)
 from moneybin.extractors.account_identity import (
     UNNAMED_ACCOUNT_LABEL,
     mask_embedded_account_number,
@@ -191,10 +195,17 @@ def sync_pull_envelope(
     recovery_actions: Sequence[RecoveryAction] | None = None,
 ) -> ResponseEnvelope[SyncPullPayload]:
     """Wrap one pull result."""
+    recovery = (
+        list(recovery_actions)
+        if recovery_actions is not None
+        else refresh_step_actions(
+            result.refresh_steps, apply_failed=result.transforms_error is not None
+        )
+    )
     return build_envelope(
         data=sync_pull_payload(result),
-        actions=actions,
-        recovery_actions=list(recovery_actions) if recovery_actions else None,
+        actions=[*actions, *refresh_investment_hints(result.refresh_steps)],
+        recovery_actions=recovery or None,
     )
 
 

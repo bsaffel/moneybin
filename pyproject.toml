@@ -2,7 +2,7 @@
 # Documentation: https://packaging.python.org/en/latest/specifications/build-backend/
 # setuptools>=77.0 required for PEP 639 license metadata (`project.license`
 # SPDX expression + `project.license-files` field).
-requires = ["setuptools>=77.0", "wheel"]
+requires = ["setuptools>=84.2.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -50,7 +50,7 @@ classifiers = [
 requires-python = ">=3.12"
 dependencies = [
     # Data transforms (SQLMesh manages raw → staging → core pipeline)
-    "sqlmesh[duckdb]>=0.236.2",
+    "sqlmesh[duckdb]>=0.236.3",
     # SQL AST parsing for schema introspection and package-write validation.
     # Also a transitive dep of sqlmesh, but declared directly because schema.py,
     # privacy/comment_sync.py, and the package framework import it independently —
@@ -66,13 +66,13 @@ dependencies = [
     "python-dotenv>=1.2.4",
     # Google Sheets connector (gsheet domain)
     "google-api-python-client>=2.200.0",
-    "google-auth>=2.58.0",
+    "google-auth>=2.62.0",
     "google-auth-oauthlib>=1.5.0",
     # Also a transitive dep of google-api-python-client, but declared directly
     # because sheets_api.py imports it to build the timeout-bearing Http client —
     # a future google-api-python-client pin change must not silently break that.
     # Floor is PYSEC-2026-3444 (unbounded gzip/deflate decompression), fixed in 0.32.0.
-    "httplib2>=0.32.0",
+    "httplib2>=0.32.1",
     # Data validation and utilities
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",  # GHSA-4xgf-cpjx-pc3j — fixed in 2.14.2
@@ -107,10 +107,10 @@ dependencies = [
     "cryptography>=50.0.1",
     "pygments>=2.21.0",
     "pyjwt>=2.14.0",
-    "joserfc>=1.7.5",
+    "joserfc>=1.7.6",
     "pillow>=13.0.0",
     "anyio>=4.15.1",
-    "soupsieve>=2.9.2",
+    "soupsieve>=3.0.4",
     "starlette>=1.8.0",
     "certifi>=2026.10.19",
     # Secret management and key derivation
@@ -131,9 +131,9 @@ dependencies = [
     # requires it. Protocol model fields are snake_case for Python attribute
     # access; the JSON wire format is unchanged, so a model_dump that feeds a
     # peer or a snapshot must pass by_alias=True (see surface_inventory).
-    "mcp>=2.2.0,<3",
+    "mcp>=2.3.0,<3",
     # TOML round-trip writer for codex config installs (preserves comments/formatting)
-    "tomlkit>=0.15.1",
+    "tomlkit>=0.15.2",
     "httpx>=0.28.1",
     "pdfplumber>=0.11.10",
     # Used instead of stdlib `re` because stdlib has no `timeout=` parameter.
@@ -215,7 +215,7 @@ moneybin = "moneybin.cli.main:main"
 dev = [
     "towncrier>=26.9.0,<27",
     # Code quality and formatting
-    "ruff>=0.17.0",
+    "ruff>=0.17.3",
     "pyright>=1.1.414",
     "pre-commit>=4.7.0",
     "sqlmesh[lsp]>=0.236.3",
@@ -228,13 +228,13 @@ dev = [
     "pip>=26.2.1",
     # Security floor for msgpack (transitive via pip-audit → cachecontrol):
     # GHSA-6v7p-g79w-8964 — fixed in 1.2.1.
-    "msgpack>=1.2.2",
+    "msgpack>=1.2.3",
     # Testing framework and tools
-    "pytest>=9.1.1",
+    "pytest>=9.2.0",
     "pytest-cov>=7.1.0",
     "pytest-json-report>=1.5.0",
     "pytest-mock>=3.16.0",
-    "pytest-asyncio>=1.4.0",
+    "pytest-asyncio>=1.4.1",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
     "pytest-memray>=1.11.0",
@@ -242,7 +242,7 @@ dev = [
     # Property-based testing. Named by multi-currency.md's testing strategy for
     # the conversion and lot-conservation properties, where the claim quantifies
     # over all amounts and rates and examples cannot establish it.
-    "hypothesis>=6.168.1",
+    "hypothesis>=6.170.5",
     # pyarrow 25 dropped the placeholder stub that typed its whole API as Any,
     # leaving pyright strict with no types at all. Drop once pyarrow ships its
     # own annotations (apache/arrow GH-48970).

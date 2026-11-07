@@ -254,3 +254,22 @@ async def test_log_signals_truncation_on_full_page(
     assert env.error is None
     assert len(env.data.events) == 1
     assert env.summary.has_more is True
+
+
+async def test_privacy_consent_set_refuses_ai_host_recipient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host recipient key cannot be granted through the MCP surface."""
+    _set_backend(monkeypatch)
+    response = await privacy_consent_set_coarse(
+        categories=["smart-import-parsing"],
+        state="granted",
+        backend="local:claude-ai",
+    )
+    assert response.error is not None
+    assert response.error.code == error_codes.PRIVACY_CONSENT_RECIPIENT_UNSUPPORTED
+    from moneybin.database import get_database
+
+    with get_database(read_only=True) as db:
+        count = db.execute("SELECT COUNT(*) FROM app.ai_consent_grants").fetchone()
+    assert count == (0,)

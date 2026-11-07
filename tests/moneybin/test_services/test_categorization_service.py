@@ -870,8 +870,8 @@ def db_with_coverage_population(db: Database) -> Database:
     """Every row shape the coverage figures have to classify, exactly once.
 
     Five rows are eligible for categorization — an open account, not a
-    transfer leg. Two of those carry no category, two were categorized inside
-    MoneyBin, and one arrived from its source file already carrying category
+    transfer leg. Two of those carry no category, two were categorized by a
+    person or a rule, and one by a mapping of its source file's own category
     text. Three further rows exist only to be excluded: a transfer leg, a row
     on an archived account, and a row whose account never resolved. One
     orphaned categorization points at a transaction that no longer exists.
@@ -888,19 +888,19 @@ def db_with_coverage_population(db: Database) -> Database:
     _insert_coverage_txn(db, "T_BARE_2")
     _insert_coverage_txn(db, "T_USER", category="Groceries")
     _insert_coverage_txn(db, "T_RULE", category="Shopping")
-    _insert_coverage_txn(db, "T_FROM_FILE", category="Utilities")
+    _insert_coverage_txn(db, "T_MAPPED", category="Utilities")
     _insert_coverage_txn(db, "T_TRANSFER", is_transfer=True)
     _insert_coverage_txn(db, "T_ARCHIVED", account_id="ACC_ARCHIVED")
     _insert_coverage_txn(db, "T_NO_ACCOUNT", account_id="ACC_GONE")
 
-    # T_FROM_FILE deliberately gets no row here — its category came from the
-    # source file's own column, which is the whole point of it. T_VANISHED has
-    # no fact row, the orphan shape doctor keeps a separate invariant for.
+    # T_VANISHED has no fact row, the orphan shape doctor keeps a separate
+    # invariant for.
     db.execute(
         "INSERT INTO app.transaction_categories "
         "(transaction_id, category, categorized_by, rule_id) VALUES "
         "('T_USER', 'Groceries', 'user', NULL), "
         "('T_RULE', 'Shopping', 'rule', 'r_1'), "
+        "('T_MAPPED', 'Utilities', 'provider_native', NULL), "
         "('T_VANISHED', 'Food', 'user', NULL)"
     )
     derive_is_categorizable(db)
@@ -916,7 +916,7 @@ class TestCoverageOverWhatNeedsCategorizing:
     ) -> None:
         stats = get_categorization_stats(db_with_coverage_population)
 
-        # Eligible: T_BARE_1, T_BARE_2, T_USER, T_RULE, T_FROM_FILE. Excluded:
+        # Eligible: T_BARE_1, T_BARE_2, T_USER, T_RULE, T_MAPPED. Excluded:
         # the transfer leg, the archived account's row, and the row whose
         # account_id resolves to no account.
         assert stats["total"] == 5
@@ -932,18 +932,14 @@ class TestCoverageOverWhatNeedsCategorizing:
         assert stats["categorized"] + stats["uncategorized"] == stats["total"]
 
     @pytest.mark.unit
-    def test_a_category_the_source_file_supplied_counts_as_categorized(
+    def test_a_mapped_source_term_counts_under_provider_native(
         self, db_with_coverage_population: Database
     ) -> None:
-        """It has a category, so the queue skips it — coverage has to agree.
-
-        It carries no app.transaction_categories row, so no assignment method
-        describes it. It gets its own bucket rather than dropping out of the
-        breakdown and leaving the parts short of the whole.
-        """
+        """A source's own category text counts once a mapping translates it."""
         stats = get_categorization_stats(db_with_coverage_population)
 
-        assert stats["by_source_supplied"] == 1
+        assert stats["by_provider_native"] == 1
+        assert "by_source_supplied" not in stats
 
     @pytest.mark.unit
     def test_the_breakdown_sums_to_categorized(

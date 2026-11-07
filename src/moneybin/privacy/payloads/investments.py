@@ -46,6 +46,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # Runtime, not TYPE_CHECKING: Pydantic resolves the annotation when it builds
 # the model. `payloads.currency` pulls in nothing heavy of its own.
 from moneybin.privacy.payloads.currency import FxRatePayload
+from moneybin.privacy.payloads.system import RefreshStageRow
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.row_set import NO_ROW_SET, row_set
 from moneybin.temporal import format_utc
@@ -559,7 +560,8 @@ InvestmentsCoarsePayload = Annotated[
 class InvestmentRecordPayload:
     """Payload for ``investments_record`` — batch event-recording result.
 
-    ``investment_transaction_ids`` carries RECORD_ID tier (opaque ids, safe
+    ``investment_transaction_ids`` contains rebuilt Golden leg IDs and carries
+    RECORD_ID tier (opaque ids, safe
     to echo back). ``error_details`` uses ``list[dict[str, str]]`` (not a
     typed nested dataclass) so the introspection walker does not recurse
     into per-item content — same rationale/shape as
@@ -762,6 +764,19 @@ class InvestmentPricePullPayload:
     # a current valuation from one that predates the closes it just fetched.
     refreshed: Annotated[bool, DataClass.AGGREGATE] = False
     refresh_error: Annotated[str | None, DataClass.AGGREGATE] = None
+    stages: list[RefreshStageRow] = field(default_factory=list)
+    identity_errors: Annotated[list[str], DataClass.TXN_TYPE] = field(
+        default_factory=list
+    )
+    rate_pairs_failed: Annotated[list[str], DataClass.CURRENCY] = field(
+        default_factory=list
+    )
+    rate_pairs_unsupported: Annotated[list[str], DataClass.CURRENCY] = field(
+        default_factory=list
+    )
+    rate_pairs_discarded: Annotated[list[str], DataClass.CURRENCY] = field(
+        default_factory=list
+    )
 
 
 @dataclass(frozen=True, slots=True)

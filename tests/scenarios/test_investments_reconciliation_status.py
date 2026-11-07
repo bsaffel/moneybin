@@ -44,6 +44,7 @@ import pytest
 from moneybin.database import Database
 from moneybin.exports.snapshot import build_bundle_snapshot
 from moneybin.services.account_service import AccountService
+from moneybin.services.investment_membership_service import InvestmentMembershipService
 from moneybin.services.investment_service import InvestmentService
 from moneybin.services.transform_service import TransformService
 from tests.moneybin.test_investments._overlap_seed import (
@@ -54,6 +55,7 @@ from tests.moneybin.test_investments._overlap_seed import (
     seed_plaid_buy,
     seed_security,
 )
+from tests.moneybin.test_investments.comparison_helpers import seed_account_metadata
 from tests.scenarios._investments_seed import insert_event, insert_security
 from tests.scenarios._runner import load_shipped_scenario, scenario_env
 
@@ -174,6 +176,7 @@ def _seed(db: Database) -> None:
         [ACCOUNT],
     )
 
+    seed_account_metadata(db, CLEAN)
     seed_manual_buy(db, account_id=CLEAN, txn_id="clean_buy")
     seed_manual_sell(db, account_id=CLEAN, txn_id="clean_sell")
 
@@ -284,7 +287,12 @@ def test_reconciliation_status_discloses_and_clears_end_to_end() -> None:
 
         # --- The remedy: choose one source, then refresh.
         AccountService(db).settings_update(
-            ACCOUNT, actor="scenario", investment_source_type="manual"
+            ACCOUNT,
+            actor="scenario",
+            investment_source_type="manual",
+            verify_source_choice=InvestmentMembershipService(db)
+            .preview_source_choice(ACCOUNT, "manual")
+            .verify,
         )
         _apply(db)
 

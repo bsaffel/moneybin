@@ -23,7 +23,7 @@ in three tiers — brass (`--accent-brass`) speaks (provenance text), gilt
 (`--accent-gilt`) fills (bars, buttons; identity marks use `--brand-gold`,
 point-markers on a line use ink), verdigris
 (`--accent-verdigris`) responds (selection, filters, links) — never blue; money is ALWAYS JetBrains Mono
-with explicit +/- signs on income/expense flows (balances unsigned) — use the `Amount` component; hairline borders, no resting
+with explicit +/− (U+2212) signs on income/expense flows (balances unsigned) — use the `Amount` component; hairline borders, no resting
 shadows; every data widget carries a SQL provenance chip (rung one of a three-rung provenance ladder — a global deep-audit strip, then pinned tooltips snapping to real points; see `design-system/charts.md`); linear chart
 interpolation only; icons come from the `Icon` component (19 glyphs, 20×20 grid,
 1.5px stroke) — never an inline one-off SVG, and the ask/AI surface is the caret

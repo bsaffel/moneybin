@@ -37,14 +37,9 @@ _DOCUMENT_SOURCE_ORIGIN = "document"
 _ACCOUNT_ROUTING_PREFIX_RANGES = ((1, 12), (21, 32), (61, 72))
 
 
-def _is_valid_aba_routing_number(value: str) -> bool:
-    """Return whether a routing number has an account-safe prefix and checksum."""
+def is_aba_checksum_valid(value: str) -> bool:
+    """Return whether a nine-digit string passes the ABA checksum."""
     if len(value) != 9 or not value.isdigit():
-        return False
-    prefix = int(value[:2])
-    if not any(
-        lower <= prefix <= upper for lower, upper in _ACCOUNT_ROUTING_PREFIX_RANGES
-    ):
         return False
     digits = [int(character) for character in value]
     checksum = (
@@ -55,6 +50,18 @@ def _is_valid_aba_routing_number(value: str) -> bool:
         + digits[8]
     )
     return checksum % 10 == 0
+
+
+def is_valid_aba_routing_number(value: str) -> bool:
+    """Return whether a routing number has an account-safe prefix and checksum."""
+    if len(value) != 9 or not value.isdigit():
+        return False
+    prefix = int(value[:2])
+    if not any(
+        lower <= prefix <= upper for lower, upper in _ACCOUNT_ROUTING_PREFIX_RANGES
+    ):
+        return False
+    return is_aba_checksum_valid(value)
 
 
 @dataclass(frozen=True)
@@ -135,7 +142,7 @@ def derive_pdf_account_identity(
     )
     strong_scope = (
         routing_number
-        if routing_number and _is_valid_aba_routing_number(routing_number)
+        if routing_number and is_valid_aba_routing_number(routing_number)
         else None
     )
     scoped_full_number = (

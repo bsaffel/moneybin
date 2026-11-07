@@ -187,8 +187,7 @@ Two reports already satisfy this and are the models to copy:
   two positions being reconciled, then the discrepancy.
 
 `core:net_worth`'s base projection — the `reports.net_worth` view and the
-unbucketed read — now ends on `net_worth` too, where the service-backed report
-it replaced was the counter-example this section used to name. Its declared
+unbucketed read — ends on `net_worth` too. Its declared
 `ReportSpec.columns` and its `--interval` SQL end on `change_pct` instead,
 because the bucketed read appends `change_abs` and `change_pct` after the base
 columns; that is Rule C's base-wins clause, not an exception to this one.

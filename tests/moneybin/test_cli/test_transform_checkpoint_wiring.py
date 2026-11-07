@@ -47,7 +47,7 @@ def test_transform_apply_emits_post_transform_checkpoint() -> None:
     ):
         mock_matching.return_value.seed_priority.return_value = None
         mock_refresh.return_value = None
-        result = TransformService(db).apply()
+        result = TransformService(db)._apply_sqlmesh()  # type: ignore[reportPrivateUsage]  # SQLMesh primitive under test
     assert result.applied is True
     db.checkpoint.assert_called_once_with("post_transform")
 
@@ -75,7 +75,7 @@ def test_transform_apply_checkpoint_failure_still_reports_applied(
     ):
         mock_matching.return_value.seed_priority.return_value = None
         mock_refresh.return_value = None
-        result = TransformService(db).apply()
+        result = TransformService(db)._apply_sqlmesh()  # type: ignore[reportPrivateUsage]  # SQLMesh primitive under test
     assert result.applied is True
     assert result.error is None
     db.checkpoint.assert_called_once_with("post_transform")
@@ -107,7 +107,7 @@ def test_transform_apply_does_not_checkpoint_on_failure() -> None:
         patch("moneybin.services.transform_service.refresh_views"),
     ):
         mock_matching.return_value.seed_priority.return_value = None
-        result = TransformService(db).apply()
+        result = TransformService(db)._apply_sqlmesh()  # type: ignore[reportPrivateUsage]  # SQLMesh primitive under test
     assert result.applied is False
     assert result.error == "RuntimeError"
     db.checkpoint.assert_not_called()

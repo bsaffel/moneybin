@@ -12,20 +12,24 @@ core.fct_balances never anchors them. Account ids are synthetic.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import cast
+from unittest.mock import patch
 
 import pytest
-import time_machine
 
-from moneybin.database import Database, sqlmesh_context
+from moneybin.database import Database
 from moneybin.reports.definitions.net_worth import net_worth
 from moneybin.reports.definitions.net_worth_accounts import net_worth_accounts
 from moneybin.reports.definitions.net_worth_currencies import net_worth_currencies
+from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+from moneybin.repositories.securities_repo import SecuritiesRepo
+from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from moneybin.services.account_service import AccountService
 from moneybin.services.doctor_service import DoctorService, InvariantResult
+from moneybin.services.transform_service import TransformService
 from tests.moneybin.test_reports.test_net_worth_runners import (
     _run,  # pyright: ignore[reportPrivateUsage]
 )
@@ -34,7 +38,6 @@ from tests.scenarios._runner.steps import run_step
 
 pytestmark = [pytest.mark.scenarios, pytest.mark.slow]
 
-_RESTATE_AFTER_SETTINGS = ["app.account_settings"]
 _CURRENCY_MEASURES = (
     "total_assets",
     "total_liabilities",
@@ -56,6 +59,42 @@ def _plaid_account(
         VALUES (?, ?, ?, 'sync_m2b3', 'plaid', ?, CURRENT_TIMESTAMP)
         """,
         [account_id, account_type, f"Fixture {account_id}", origin],
+    )
+    AccountLinksRepo(db).insert(
+        link_id=f"fixture_{account_id}",
+        account_id=account_id,
+        ref_kind="source_native",
+        ref_value=account_id,
+        source_type="plaid",
+        source_origin=origin,
+        decided_by="auto",
+        actor="system",
+    )
+
+
+def _investment_security(db: Database) -> None:
+    """Bind the synthetic broker security without adding balance evidence."""
+    links = SecurityLinksRepo(db)
+    if (
+        links.lookup(
+            ref_kind="plaid_security_id", ref_value="prov_m2b3_sec", source_type="plaid"
+        )
+        is not None
+    ):
+        return
+    SecuritiesRepo(db).upsert(
+        security_id="m2b3_security",
+        name="Synthetic Security",
+        security_type="equity",
+        actor="system",
+    )
+    links.insert(
+        security_id="m2b3_security",
+        ref_kind="plaid_security_id",
+        ref_value="prov_m2b3_sec",
+        source_type="plaid",
+        decided_by="auto",
+        actor="system",
     )
 
 
@@ -84,6 +123,8 @@ def _plaid_inv_txn(
     amount: str,
 ) -> None:
     """Plaid convention: positive amount = cash out; staging flips the sign."""
+    if quantity is not None:
+        _investment_security(db)
     txn_id = f"itx_{account_id}_{subtype}_{day}"
     db.execute(
         """
@@ -121,6 +162,8 @@ def _snapshot(
     db: Database, origin: str, holdings: list[tuple[str, str | None, str | None]]
 ) -> None:
     """One newest receipt for the item, plus (account_id, quantity, value) rows."""
+    if holdings:
+        _investment_security(db)
     db.execute(
         """
         INSERT INTO raw.plaid_investment_holdings_snapshots (
@@ -154,18 +197,17 @@ def _today(db: Database) -> date:
 
 
 def _archive_on(db: Database, account_id: str, on: date) -> None:
-    """Through the service (Requirement 9), wall clock frozen to noon on ``on``."""
-    with time_machine.travel(
-        datetime.combine(on, datetime.min.time()).replace(hour=12), tick=False
+    """Set the archive calendar date while the real refresh keeps its own clock."""
+    with patch(
+        "moneybin.services.profile_settings_service.ProfileSettingsService.today",
+        return_value=on,
     ):
         AccountService(db).settings_update(account_id, archived=True, actor="system")
 
 
 def _restate(db: Database) -> None:
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(
-            restate_models=_RESTATE_AFTER_SETTINGS, auto_apply=True, no_prompts=True
-        )
+    result = TransformService(db).apply()
+    assert result.applied, result.error
 
 
 def _invariant(db: Database, name: str) -> InvariantResult:

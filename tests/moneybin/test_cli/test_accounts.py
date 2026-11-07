@@ -11,6 +11,8 @@ from typer.testing import CliRunner
 from moneybin.cli.main import app
 from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
+from moneybin.investments.event_curation import CurationRemap
+from moneybin.investments.source_choice import SourceChoicePreview
 from moneybin.privacy.payloads.accounts import (
     AccountListPayload,
     AccountResolutionItem,
@@ -75,6 +77,10 @@ _ACCOUNT_B = _make_account(
 _ACCOUNT_ARCHIVED = _make_account(
     "acct_archived", "Old Account", institution_name="Old Bank", archived=True
 )
+
+
+def _empty_source_preview(source: str | None) -> SourceChoicePreview:
+    return SourceChoicePreview("acct_a", source, {}, CurationRemap({}, {}), "fixture")
 
 
 def test_resolve_keeps_confidence_atomic_in_a_narrow_terminal(
@@ -811,7 +817,11 @@ class TestAccountsSet:
     def test_set_investment_source_type_passes_the_value_and_confirms(
         self, runner: CliRunner
     ) -> None:
+        preview = _empty_source_preview("manual")
         with (
+            patch(
+                "moneybin.services.investment_membership_service.InvestmentMembershipService"
+            ) as mock_membership,
             patch("moneybin.cli.commands.accounts.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.update_account_settings",
@@ -821,6 +831,7 @@ class TestAccountsSet:
                 "moneybin.cli.commands.accounts.AccountService"
             ) as mock_service_class,
         ):
+            mock_membership.return_value.preview_source_choice.return_value = preview
             mock_service = mock_service_class.return_value
             mock_service.investment_source_confirmation.return_value = (
                 "Using 2 recorded trades; ignoring 3 synced trades (kept, not deleted)"
@@ -833,13 +844,21 @@ class TestAccountsSet:
         assert result.exit_code == 0, result.output
         kwargs = mock_update.call_args.kwargs
         assert kwargs["investment_source_type"] == "manual"
+        assert kwargs["verify_source_choice"] == preview.verify
+        mock_membership.return_value.preview_source_choice.assert_called_once_with(
+            "acct_a", "manual"
+        )
         assert "Using 2 recorded trades; ignoring 3 synced trades" in result.output
 
     @pytest.mark.unit
     def test_set_choice_before_any_rows_prints_the_choice_not_every_source(
         self, runner: CliRunner
     ) -> None:
+        preview = _empty_source_preview("plaid")
         with (
+            patch(
+                "moneybin.services.investment_membership_service.InvestmentMembershipService"
+            ) as mock_membership,
             patch("moneybin.cli.commands.accounts.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.update_account_settings",
@@ -849,6 +868,7 @@ class TestAccountsSet:
                 "moneybin.cli.commands.accounts.AccountService"
             ) as mock_service_class,
         ):
+            mock_membership.return_value.preview_source_choice.return_value = preview
             mock_service = mock_service_class.return_value
             mock_service.investment_source_confirmation.return_value = (
                 "Using synced trades (none yet)"
@@ -862,12 +882,20 @@ class TestAccountsSet:
         mock_update.assert_called_once()
         assert "Using synced trades (none yet)" in result.output
         assert "every source" not in result.output
+        assert mock_update.call_args.kwargs["verify_source_choice"] == preview.verify
+        mock_membership.return_value.preview_source_choice.assert_called_once_with(
+            "acct_a", "plaid"
+        )
 
     @pytest.mark.unit
     def test_set_clear_investment_source_type_passes_clear(
         self, runner: CliRunner
     ) -> None:
+        preview = _empty_source_preview(None)
         with (
+            patch(
+                "moneybin.services.investment_membership_service.InvestmentMembershipService"
+            ) as mock_membership,
             patch("moneybin.cli.commands.accounts.get_database"),
             patch(
                 "moneybin.cli.commands.accounts.update_account_settings",
@@ -877,6 +905,7 @@ class TestAccountsSet:
                 "moneybin.cli.commands.accounts.AccountService"
             ) as mock_service_class,
         ):
+            mock_membership.return_value.preview_source_choice.return_value = preview
             mock_service = mock_service_class.return_value
             mock_service.investment_source_confirmation.return_value = None
             result = runner.invoke(
@@ -887,6 +916,10 @@ class TestAccountsSet:
         assert result.exit_code == 0, result.output
         kwargs = mock_update.call_args.kwargs
         assert kwargs["investment_source_type"] is CLEAR
+        assert kwargs["verify_source_choice"] == preview.verify
+        mock_membership.return_value.preview_source_choice.assert_called_once_with(
+            "acct_a", None
+        )
         assert "every source" in result.output
 
     @pytest.mark.unit

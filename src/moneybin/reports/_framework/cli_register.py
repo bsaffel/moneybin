@@ -35,7 +35,9 @@ from moneybin.cli.render import (
     UNCATEGORIZED_LABEL,
     Money,
     Placeholder,
+    build_next_step,
     build_rows,
+    compose_human_result,
     count_wide_request,
 )
 from moneybin.cli.utils import (
@@ -121,13 +123,15 @@ def report_note_lines(
     *,
     quiet: bool = False,
     symbols: TerminalSymbols | None = None,
+    include_actions: bool = True,
 ) -> tuple[str, ...]:
     """Build report fidelity disclosures for one complete terminal answer.
 
-    ``quiet`` drops the next-step hints and nothing else: the conversion
+    ``quiet`` drops optional next-step hints and nothing else: the conversion
     disclosure and the two warnings say how far the numbers can be trusted,
     and asking for less chatter is not a claim that truncation or a currency
     conversion stopped happening.
+    ``include_actions=False`` keeps typed commands separate for final rendering.
     """
     if symbols is None:
         symbols = get_terminal_policy().symbols
@@ -148,9 +152,11 @@ def report_note_lines(
             f"{symbols.attention} Showing the first {len(result.records):,} rows; more exist. "
             "Raise --limit or narrow the report to see the rest."
         )
-    if not quiet:
+    if include_actions:
         lines.extend(
-            f"{symbols.action} {_next_step_line(action)}" for action in result.actions
+            f"{symbols.action} {_next_step_line(action)}"
+            for action in result.actions
+            if not quiet or isinstance(action, NextStep) and action.required
         )
     return tuple(lines)
 
@@ -503,11 +509,23 @@ def render_report_result(
         )
         return
     policy = get_terminal_policy(no_pager=no_pager)
-    disclosures = report_note_lines(result, quiet=quiet, symbols=policy.symbols)
+    notes: list[object] = list(
+        report_note_lines(result, symbols=policy.symbols, include_actions=False)
+    )
+    for action in result.actions:
+        if quiet and not (isinstance(action, NextStep) and action.required):
+            continue
+        if isinstance(action, NextStep):
+            reason = action.reason[:1].upper() + action.reason[1:]
+            notes.append(
+                build_next_step(
+                    reason, generated_cli_command(*action.cli), terminal=policy
+                )
+            )
+        else:
+            notes.append(f"{policy.symbols.action} {action}")
+    parts: list[object] = []
     if result.records:
-        from rich.console import Group
-        from rich.text import Text
-
         human = build_rows(
             visible,
             [
@@ -526,19 +544,13 @@ def render_report_result(
             optional=optional,
             terminal=policy,
         )
-        if disclosures:
-            human = Group(human, Text("\n" + "\n".join(disclosures)))
+        parts.append(human)
+        if notes:
+            parts.append("")
+    parts.extend(notes)
+    if parts:
         emit_human_result(
-            human,
-            policy=policy,
-            finite_read=True,
-            no_pager=no_pager,
-        )
-    elif disclosures:
-        from rich.text import Text
-
-        emit_human_result(
-            Text("\n".join(disclosures)),
+            compose_human_result(parts),
             policy=policy,
             finite_read=True,
             no_pager=no_pager,

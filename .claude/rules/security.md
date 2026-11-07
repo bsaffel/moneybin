@@ -75,7 +75,7 @@ When catching exceptions from external libraries (keyring, duckdb, argon2, base6
 
 1. **Read the library docs** for the exact exception type raised — don't guess.
 2. **Wrap at the boundary module**, not in callers. E.g., `SecretStore.delete_key()` catches `keyring.errors.PasswordDeleteError` and raises `SecretNotFoundError`.
-3. **Comment untyped exceptions**: DuckDB raises generic errors on bad encryption keys. Use `# noqa: BLE001 — duckdb raises untyped errors on bad ENCRYPTION_KEY` to document why a broad catch is needed.
+3. **Comment untyped exceptions**: DuckDB raises generic errors on bad encryption keys. Use `# noqa: BLE001  # duckdb raises untyped errors on bad ENCRYPTION_KEY` to document why a broad catch is needed.
 4. **Test the wrapping**: mock the real library exception type, verify the project exception is raised.
 
 ## General Practices
@@ -126,9 +126,6 @@ or a content checksum over anything derived from user input: both discriminate
 at least as well without digesting a binding the user chose. A minted id
 discloses nothing; a checksum over a very small result stays guessable by the
 rule above, so prefer it to a parameter hash rather than reading it as inert.
-Origin: PR #374, where a receipt's
-parameter fingerprint was added, found to leak on one path and collapse on the
-other, and removed — the export id and checksums already did the job.
 
 **A declared class is evidence, not proof.** Before reasoning from one, check
 what the field actually holds: `balance_drift`'s `account` parameter is

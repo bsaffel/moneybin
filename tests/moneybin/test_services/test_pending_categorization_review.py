@@ -23,6 +23,7 @@ from moneybin.repositories.categorization_decisions_repo import (
 from moneybin.repositories.transaction_categories_repo import TransactionCategoriesRepo
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.categorization import CategorizationService
+from moneybin.services.investment_matching_service import InvestmentMatchingService
 from moneybin.services.matching_service import MatchingService
 from moneybin.services.merchant_links_service import MerchantLinksService
 from moneybin.services.review_service import ReviewService
@@ -88,6 +89,7 @@ def test_status_counts_pending_attempts_instead_of_rejected_inventory(
         AccountLinksService(db),
         MerchantLinksService(db),
         SecurityLinksService(db),
+        InvestmentMatchingService(db),
     ).status()
     assert service.count_uncategorized() == 2
     assert status.categorize_pending == 1

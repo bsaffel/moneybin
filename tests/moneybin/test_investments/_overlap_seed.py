@@ -6,6 +6,7 @@ from datetime import date
 
 from moneybin.database import Database
 from moneybin.services.transform_service import TransformService
+from tests.moneybin.test_investments.comparison_helpers import seed_account_metadata
 
 ACCOUNT = "acc_choice"
 _SECURITY = "sec_choice_0001"
@@ -60,6 +61,7 @@ def seed_plaid_account(db: Database) -> None:
         """,  # test fixture, not executing user SQL
         [ACCOUNT, _ORIGIN],
     )
+    seed_account_metadata(db, ACCOUNT, origin=_ORIGIN)
 
 
 def seed_manual_buy(db: Database, *, account_id: str, txn_id: str) -> None:

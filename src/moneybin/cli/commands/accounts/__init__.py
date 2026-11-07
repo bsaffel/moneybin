@@ -365,7 +365,7 @@ def accounts_set(
         False,
         "--yes",
         "-y",
-        help="Skip soft-validation prompt for non-canonical values",
+        help="Approve the displayed source-switch impact and skip soft-validation prompts",
     ),
 ) -> None:
     """Update account settings (structural + behavioral fields).
@@ -444,6 +444,31 @@ def accounts_set(
                 raise typer.Exit(2)
 
     with handle_cli_errors():
+        source_preview = None
+        if "investment_source_type" in diff:
+            from moneybin.services.investment_membership_service import (
+                InvestmentMembershipService,
+            )
+
+            source = diff["investment_source_type"]
+            with get_database(read_only=True) as db:
+                source_preview = InvestmentMembershipService(db).preview_source_choice(
+                    account_id, None if source is CLEAR else str(source)
+                )
+            if source_preview.changes:
+                typer.echo(source_preview.message(), err=True)
+                if not yes:
+                    if not get_terminal_policy().interactive:
+                        typer.echo(
+                            "Review this preview, then use --yes or an interactive terminal to confirm.",
+                            err=True,
+                        )
+                        raise typer.Exit(1)
+                    if not typer.confirm(
+                        "Apply this investment source switch?", default=False, err=True
+                    ):
+                        typer.echo("Cancelled — nothing was changed.", err=True)
+                        raise typer.Exit(0)
         with get_database(read_only=False) as db:
             # Decimal conversion inside the handler so InvalidOperation surfaces
             # via classify_user_error rather than as a raw traceback.
@@ -456,6 +481,7 @@ def accounts_set(
                 db,
                 account_id,
                 actor="cli",
+                verify_source_choice=source_preview.verify if source_preview else None,
                 **diff,  # type: ignore[arg-type]  # dynamic settings_update kwargs
             )
             source_confirmation = (

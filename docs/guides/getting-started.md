@@ -3,7 +3,7 @@
 
 From a clean machine to a first report and a first question to your AI assistant, in eight steps: install from source, try the synthetic demo, create a profile, import one bank file, check what landed, read the first reports, categorize, and wire the MCP server into a client. Budget about an hour, most of it on your bank's download page.
 
-Every transcript below is real output from a fresh profile holding one synthetic 20-transaction January statement, captured at 100 columns with color off and both streams redirected to a file, so it merges stdout and stderr and nothing pages or prompts. It is trimmed only by whole lines — 15 in total across four blocks: nine lines of local file paths and the labels they wrapped away from, two SQLMesh notices about reseeded tables, a two-line deprecation warning a dependency prints, and a two-line next-step hint pointing at `profile set home_currency <CODE>`. Each block names the lines it lost. Your numbers will differ; the shape will not.
+The table and receipt excerpts below come from a fresh profile holding one synthetic 20-transaction January statement, captured at 100 columns with color off and both streams redirected to a file, so it merges stdout and stderr and nothing pages or prompts. The affected next-step lines were refreshed separately with the current renderer, using the report actions and doctor recipe without reopening the profile; the retained tables and receipts are from the original capture. Thirteen lines remain trimmed across four blocks: nine lines of local file paths and their labels, two SQLMesh notices about reseeded tables, and a two-line dependency deprecation warning. Each block names the lines it lost. Your numbers will differ; the shape will not.
 
 ## What you need
 
@@ -125,10 +125,11 @@ The display name is institution, account type, and last four. The account-number
 ```console
 $ uv run moneybin system doctor
 ! categorization_coverage — 100% of the transactions needing a category are uncategorized
-   › Consider Run the deterministic categorization cascade (rules + merchants) to raise coverage
+   › Suggested: Run the deterministic categorization cascade (rules + merchants) to raise coverage
 above the 50% threshold. Suggested (not certain) because the cascade applies 0 rows when no active
 rules or merchant mappings match the remaining uncategorized transactions — re-run the doctor after
-to verify.: moneybin transactions categorize run --methods rules,merchants
+to verify:
+   moneybin transactions categorize run --methods rules,merchants
 ! net_worth_stale_balance — 1 account(s) in net worth have no balance observed in the last 30 days,
 so their balances are carried forward — import a recent statement, sync, or record one with
 `moneybin accounts balance assert` and run `moneybin refresh` <!-- cli-invocation-ok: real CLI output quoting two valid commands back to back; the fenced-block tokenizer doesn't split inline backtick spans the way prose does -->
@@ -152,9 +153,11 @@ $ uv run moneybin reports net-worth-accounts
 
 › The single home-currency total: moneybin reports net-worth
 › The currency-level breakdown: moneybin reports net-worth-currencies
+› Converted totals; this profile has no usable home currency:
+moneybin profile set home_currency '<CODE>'
 ```
 
-A third hint, pointing at `profile set home_currency <CODE>` for converted totals, is trimmed above: it wraps onto a second line at 100 columns. Each row is an account at the latest balance the file carried, and `--wide` adds `observation_source`, which names where that balance was observed — `ofx` is the ledger balance the statement itself reports.
+Replace `<CODE>` with the home currency you choose. Each row is an account at the latest balance the file carried, and `--wide` adds `observation_source`, which names where that balance was observed — `ofx` is the ledger balance the statement itself reports.
 
 ```console
 $ uv run moneybin transactions list --limit 5

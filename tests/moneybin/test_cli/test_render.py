@@ -2106,6 +2106,43 @@ def test_a_code_block_never_splits_a_token_wider_than_the_terminal() -> None:
     assert rendered == statement + "\n"
 
 
+@pytest.mark.parametrize(
+    ("reason", "command", "expected"),
+    [
+        (
+            "Inspect the SQL",
+            "moneybin reports explain test:report",
+            "> Inspect the SQL: moneybin reports explain test:report\n",
+        ),
+        (
+            "界" * 30,
+            "moneybin reports explain test:report",
+            "> " + "界" * 30 + ":\nmoneybin reports explain test:report\n",
+        ),
+        (
+            "Check [literal] metadata\x1b[31m",
+            "moneybin reports explain test:report",
+            "> Check [literal] metadata: moneybin reports explain test:report\n",
+        ),
+    ],
+)
+def test_next_step_measures_cells_and_preserves_literal_text(
+    reason: str, command: str, expected: str
+) -> None:
+    from dataclasses import replace
+
+    from moneybin.cli.render import build_next_step
+
+    policy = replace(_ascii_terminal_policy(), width=90)
+
+    assert (
+        render_human_text(
+            build_next_step(reason, command, terminal=policy), terminal=policy
+        )
+        == expected
+    )
+
+
 def test_build_rows_groups_only_the_declared_count_subset() -> None:
     """A rate declared `numeric` alone prints as stored beside a grouped count."""
     policy = _ascii_terminal_policy()

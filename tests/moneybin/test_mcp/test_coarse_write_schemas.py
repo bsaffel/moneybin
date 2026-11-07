@@ -383,13 +383,19 @@ def test_annotation_schema_requires_variant_fields() -> None:
     [
         (
             ReviewDecisionRequest,
-            {"auto_rule", "categorization", "match", "rule_conflict"},
+            {
+                "auto_rule",
+                "categorization",
+                "match",
+                "investment_match",
+                "rule_conflict",
+            },
         ),
         (
             IdentityDecisionRequest,
             {"account_link", "merchant_link", "security_link"},
         ),
-        (TaxonomyStateRequest, {"category", "merchant"}),
+        (TaxonomyStateRequest, {"category", "merchant", "source_category"}),
     ],
 )
 def test_coarse_union_schemas_expose_kind_discriminators(
@@ -825,6 +831,12 @@ async def test_taxonomy_set_coarse_schema_and_annotations() -> None:
     assert variants == {
         "category": {"kind", "state"},
         "merchant": {"kind", "state"},
+        "source_category": {
+            "kind",
+            "state",
+            "source_origin",
+            "source_category_code",
+        },
     }
     Draft202012Validator.check_schema(tool.input_schema)
 
@@ -923,6 +935,7 @@ async def test_live_standard_write_discriminators_render_exactly() -> None:
         "auto_rule": {"kind", "decision_id", "decision"},
         "categorization": {"kind", "decision_id", "decision"},
         "match": {"kind", "decision_id", "decision"},
+        "investment_match": {"kind", "decision_id", "decision"},
         "rule_conflict": {"kind", "decision_id", "decision"},
     }
     assert _rendered_variants(identities.input_schema, collection="decisions") == {
@@ -933,6 +946,12 @@ async def test_live_standard_write_discriminators_render_exactly() -> None:
     assert _rendered_variants(taxonomy.input_schema, collection="items") == {
         "category": {"kind", "state"},
         "merchant": {"kind", "state"},
+        "source_category": {
+            "kind",
+            "state",
+            "source_origin",
+            "source_category_code",
+        },
     }
 
     rule = rules.input_schema["properties"]["rules"]["items"]

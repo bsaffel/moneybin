@@ -2082,7 +2082,6 @@ async def test_type_override_normalizes_and_clears_through_mcp(
     from moneybin.orchestration.refresh import RefreshResult
     from moneybin.services.refresh_outcome import StageOutcome
 
-    monkeypatch.setattr("moneybin.services.restate.restate_after_write", MagicMock())
     refresh = MagicMock(
         return_value=RefreshResult(
             applied=True,

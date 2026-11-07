@@ -29,7 +29,7 @@ Related code: `src/moneybin/mcp/` (tool registration and dispatch), `src/moneybi
    code-reviewed per-tool overrides; the shipped 180-second overrides are
    `gsheet_connect`, `gsheet_disconnect`, `sync_disconnect`, `sync_pull`,
    `identity_links_decide`, `import_confirm`, `import_revert`, `accounts_set`,
-   and `system_audit_undo`.
+   `system_audit_undo`, and `investments_record`.
 7. Tools that already complete in well under the cap are unchanged in behavior; the timeout is invisible on the happy path.
 8. **The cap bounds machine work, not human deliberation.** Time a call spends
    waiting on a confirmation prompt is excluded from it: the deadline pauses for
@@ -76,13 +76,22 @@ No schema changes. Two configuration fields:
 
 - **One configurable default with bounded overrides.** The 30-second setting
   covers ordinary calls. Long-running connector, identity-decision, confirm,
-  revert, account-settings, and audit-undo workflows opt into 180 seconds in
-  their decorators; overrides are code constants, not user-configurable registry
-  sprawl. Account classification changes and their reversals rebuild the account
-  projection before local matching, transforms, and categorization. The explicit
+  revert, account-settings, audit-undo, and investment-recording workflows use
+  180 seconds in their decorators; overrides are code constants, not
+  user-configurable registry sprawl. Account classification changes and their
+  reversals rebuild the account projection before local matching, transforms,
+  and categorization. The explicit
   sync pull allows the broker's bounded synchronous retrieval before local ingestion and
   refresh; it does not guarantee arbitrary local processing finishes within 180
   seconds. Committed job/phase recovery remains available after a timeout.
+- **Investment recording includes one synchronous rebuild per batch.**
+  `investments_record` uses its 180-second budget for validation, the atomic Raw
+  write, comparison-input bootstrap, planning, membership reconciliation, and
+  the dependent SQLMesh rebuild. It returns current Golden IDs after that
+  rebuild succeeds. A rebuild failure after commit reports saved events and
+  directs recovery through transform refresh; recording the batch again can
+  duplicate it. The budget bounds the complete workflow without changing the
+  30-second default or guaranteeing arbitrary datasets finish within 180 seconds.
 - **Cancellation must reach DuckDB.** Naive `asyncio.wait_for` cancels the future but leaves the worker thread running and the connection held. The dispatch layer must (a) hold a reference to the active `DuckDBPyConnection`, (b) call `interrupt()` on timeout, and (c) force-close the connection in a `finally` block so the lock is released even if `interrupt()` is a no-op for the current statement (e.g., mid-`COPY`).
 - **Connection-per-call as the cleanup fallback.** Each tool dispatch acquires a fresh connection from the connection manager. On timeout, that connection is closed, which aborts the transaction and releases the lock. Long-lived shared connections are not used in the MCP path.
 - **Worker-thread limitation is explicit.** `asyncio.timeout()` returns the

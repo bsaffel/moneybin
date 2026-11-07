@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import cast
 
 from moneybin.adapters.refresh_adapters import (
+    refresh_investment_hints,
     refresh_rate_gap_hints,
     refresh_step_actions,
     refresh_steps_fields,
@@ -162,6 +163,7 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
         )
 
     actions.extend(refresh_rate_gap_hints(sync_result.refresh_steps))
+    actions.extend(refresh_investment_hints(sync_result.refresh_steps))
 
     threshold = get_settings().categorization.assist_offer_threshold
     uncategorized = _uncategorized_count()

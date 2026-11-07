@@ -59,6 +59,7 @@ Usage: `moneybin privacy grant [OPTIONS] {category}`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--backend` | text |  | AI backend (defaults to MONEYBIN_AI__DEFAULT_BACKEND) |
+| `--recipient` | text |  | AI app that may receive PDF statement content (claude-ai, claude-code, cursor); interactive only |
 | `--mode` | one of `persistent`, `one-time` | `persistent` | persistent or one-time |
 | `--yes, -y` | flag |  | Skip the confirmation prompt |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
@@ -81,6 +82,7 @@ Usage: `moneybin privacy revoke [OPTIONS] {category}`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--backend` | text |  | AI backend |
+| `--recipient` | text |  | AI app whose remembered consent to revoke |
 | `--yes, -y` | flag |  | Skip confirmation |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |

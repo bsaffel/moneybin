@@ -111,6 +111,7 @@ class ReviewStatusPayload:
     merchant_links_pending: Annotated[int, DataClass.AGGREGATE]
     security_links_pending: Annotated[int, DataClass.AGGREGATE]
     total: Annotated[int, DataClass.AGGREGATE]
+    investment_matches_pending: Annotated[int, DataClass.AGGREGATE] = 0
 
 
 # ---------------------------------------------------------------------------

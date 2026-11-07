@@ -5,7 +5,7 @@ from typing import Any
 
 from moneybin.investments.observation_versions import observation_version
 
-ALGORITHM_VERSION = "investment_match_v1"
+ALGORITHM_VERSION = "investment_match_v2"
 
 _LEG_DEPENDENCIES = (
     "source_event_key",

@@ -4,9 +4,9 @@ multi-currency.md Requirement 3 ("where a grain genuinely cannot know its
 currency, it inherits the account's ``currency_code``, never a blind ``'USD'``")
 applied to the investment ledger. The cash grain already resolves it this way in
 ``core.fct_transactions``; these tests hold the same chain for the investment
-grain — ``raw.manual_investment_transactions`` →
-``prep.stg_manual__investment_transactions`` → ``core.fct_investment_transactions``
-— by installing the shipped identity and ledger models over hand-made sources.
+grain through the shipped identity, comparison, membership, and Golden
+projection models over synthetic Raw observations. Currency becomes immutable
+published evidence until an audited dependency transition replaces its binding.
 
 The discriminating fixture is a **EUR** account: a USD one passes whether the
 model inherits or fabricates. The unknown-account-currency case is the other
@@ -25,6 +25,16 @@ import pytest
 
 from moneybin.currency_lots import sqlmesh_loader
 from moneybin.database import SQLMESH_ROOT, Database
+from moneybin.repositories.account_settings_repo import AccountSettingsRepo
+from moneybin.repositories.investment_event_members_repo import (
+    InvestmentEventMembersRepo,
+)
+from moneybin.repositories.securities_repo import SecuritiesRepo
+from moneybin.services.investment_membership_service import InvestmentMembershipService
+from tests.moneybin.test_investments.comparison_helpers import install_comparison_models
+from tests.moneybin.test_investments.test_investment_golden_projection import (
+    install_model,
+)
 
 _MANUAL_STG = (
     SQLMESH_ROOT / "models" / "prep" / "stg_manual__investment_transactions.sql"
@@ -33,31 +43,6 @@ _MANUAL_IDENTITY = (
     SQLMESH_ROOT / "models" / "prep" / "int_manual__investment_identity.sql"
 )
 _LEDGER = SQLMESH_ROOT / "models" / "core" / "fct_investment_transactions.sql"
-
-# The columns core.fct_investment_transactions unions from the two Plaid
-# branches. Empty stubs: this file is about the manual branch's currency.
-_PLAID_COLUMNS = """
-    investment_transaction_id VARCHAR,
-    account_id VARCHAR,
-    security_id VARCHAR,
-    trade_date DATE,
-    settlement_date DATE,
-    original_acquisition_date DATE,
-    type VARCHAR,
-    subtype VARCHAR,
-    event_group_id VARCHAR,
-    quantity DECIMAL(28, 10),
-    price DECIMAL(28, 10),
-    amount DECIMAL(18, 2),
-    fees DECIMAL(18, 2),
-    currency_code VARCHAR,
-    provider_type VARCHAR,
-    provider_subtype VARCHAR,
-    source_type VARCHAR,
-    source_origin VARCHAR,
-    description VARCHAR,
-    created_at TIMESTAMPTZ
-"""
 
 _ACCOUNT_ID = "acct_brokerage_eur"
 
@@ -90,12 +75,21 @@ def _install_ledger_chain(
 ) -> None:
     """Install the shipped identity and ledger models over hand-made sources."""
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-    db.execute(
-        f"CREATE TABLE prep.stg_plaid__investment_transactions ({_PLAID_COLUMNS}, ledger_include BOOLEAN)"
-    )  # static test DDL
-    db.execute(
-        f"CREATE TABLE prep.stg_plaid__opening_lots ({_PLAID_COLUMNS})"
-    )  # static test DDL
+    # Clearing an override rereads the shipped Account query and its sources.
+    for seed in ("account_type_map", "institutions", "iso_currencies"):
+        db.execute(
+            f"CREATE TABLE seeds.{seed} AS SELECT * FROM read_csv(?, all_varchar = true)",  # noqa: S608  # fixed shipped seed names, bound paths
+            [str(SQLMESH_ROOT / "models" / "seeds" / f"{seed}.csv")],
+        )  # fixed shipped seed names, bound local paths
+    for name in (
+        "prep.stg_ofx__accounts",
+        "prep.stg_ofx__balances",
+        "prep.stg_plaid__accounts",
+        "prep.stg_plaid__balances",
+        "prep.stg_simplefin__accounts",
+        "prep.stg_tabular__accounts",
+    ):
+        install_model(db, name)
     # The ledger reads the account base, not the dim view over it.
     db.execute("""
         CREATE TABLE prep.int_accounts__merged (
@@ -111,6 +105,23 @@ def _install_ledger_chain(
         "VALUES (?, ?, ?::TIMESTAMPTZ)",
         [_ACCOUNT_ID, account_currency, account_updated_at],
     )
+    db.execute(
+        "CREATE VIEW core.dim_accounts AS "
+        "SELECT account_id, currency_code FROM prep.int_accounts__merged"
+    )
+    SecuritiesRepo(db).upsert(
+        security_id="sec_1",
+        name="Synthetic Security",
+        security_type="equity",
+        actor="cli",
+    )
+    install_comparison_models(db)
+    _publish_currency(db, account_currency)
+    for name in (
+        "prep.int_investment_events__source_projection",
+        "prep.int_investment_events__opening_projection",
+    ):
+        install_model(db, name)
     db.execute(  # shipped model body, not user SQL
         "CREATE OR REPLACE VIEW prep.int_manual__investment_identity AS "
         + _model_body(_MANUAL_IDENTITY)
@@ -137,13 +148,44 @@ def _record_event(
         """
         INSERT INTO raw.manual_investment_transactions
             (source_transaction_id, import_id, account_id, security_id, type,
-             trade_date, quantity, amount, currency_code, created_by,
+             trade_date, quantity, price, amount, fees, currency_code, created_by,
              investment_transaction_id, created_at)
         VALUES ('manual_evt_1', 'import_1', ?, 'sec_1', ?, '2026-05-11'::DATE,
-                10::DECIMAL(28,10), ?::DECIMAL(18,2), ?, 'cli', 'inv_evt_1',
+                ?::DECIMAL(28,10), 10, ?::DECIMAL(18,2), 0, ?, 'cli', 'inv_evt_1',
                 ?::TIMESTAMPTZ)
         """,  # static test fixture
-        [_ACCOUNT_ID, event_type, amount, currency_code, created_at],
+        [
+            _ACCOUNT_ID,
+            event_type,
+            "-10" if event_type == "sell" else "10",
+            amount,
+            currency_code,
+            created_at,
+        ],
+    )
+    InvestmentMembershipService(db).reconcile(actor="cli")
+
+
+def _publish_currency(db: Database, currency: str | None) -> None:
+    AccountSettingsRepo(db).set(
+        account_id=_ACCOUNT_ID,
+        display_name=None,
+        official_name=None,
+        last_four=None,
+        account_subtype=None,
+        holder_category=None,
+        currency_code=currency,
+        credit_limit=None,
+        archived=False,
+        archived_at=None,
+        include_in_net_worth=True,
+        default_cost_basis_method=None,
+        investment_source_type=None,
+        investment_source_type_changed_at=None,
+        archived_changed_at=None,
+        currency_code_changed_at=datetime.now(UTC),
+        default_cost_basis_method_changed_at=None,
+        actor="cli",
     )
 
 
@@ -185,10 +227,19 @@ class TestInvestmentEventCurrencyInheritance:
         _install_ledger_chain(db, account_currency=None)
         _record_event(db, currency_code=None)
 
-        assert _ledger_currency(db) is None
+        assert db.execute(
+            "SELECT currency_code FROM raw.manual_investment_transactions"
+        ).fetchone() == (None,)
+        assert InvestmentEventMembersRepo(db).active_members() == []
+        assert (
+            db.execute(
+                "SELECT investment_transaction_id FROM core.fct_investment_transactions"
+            ).fetchall()
+            == []
+        )
 
     def test_inherited_currency_uses_account_freshness(self, db: Database) -> None:
-        """A newer Account Currency timestamp advances the inherited event."""
+        """Published Account Currency changes advance inherited membership freshness."""
         _install_ledger_chain(
             db,
             account_currency="GBP",
@@ -201,9 +252,10 @@ class TestInvestmentEventCurrencyInheritance:
         )
 
         raw = db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall()
+        before = InvestmentEventMembersRepo(db).active_members()[0]
         assert _ledger_currency_and_updated_at(db) == (
             "GBP",
-            datetime(2026, 5, 12, 9, tzinfo=UTC),
+            before["projection_changed_at"],
         )
         db.execute(
             """UPDATE prep.int_accounts__merged
@@ -212,9 +264,16 @@ class TestInvestmentEventCurrencyInheritance:
             [_ACCOUNT_ID],
         )
         assert _ledger_currency_and_updated_at(db) == (
-            "EUR",
-            datetime(2026, 5, 13, 10, tzinfo=UTC),
+            "GBP",
+            before["projection_changed_at"],
         )
+        _publish_currency(db, "EUR")
+        after = InvestmentEventMembersRepo(db).active_members()[0]
+        assert _ledger_currency_and_updated_at(db) == (
+            "EUR",
+            after["projection_changed_at"],
+        )
+        assert after["projection_changed_at"] > before["projection_changed_at"]
         assert (
             db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall()
             == raw
@@ -223,10 +282,10 @@ class TestInvestmentEventCurrencyInheritance:
     def test_cleared_inherited_currency_uses_account_freshness(
         self, db: Database
     ) -> None:
-        """Clearing inherited Currency is a fresh NULL, not stale source data."""
+        """Unresolved inherited Currency retires publication without fabricating USD."""
         _install_ledger_chain(
             db,
-            account_currency=None,
+            account_currency="GBP",
             account_updated_at="2026-05-13 10:00:00+00:00",
         )
         _record_event(
@@ -235,9 +294,27 @@ class TestInvestmentEventCurrencyInheritance:
             created_at="2026-05-12 09:00:00+00:00",
         )
 
-        assert _ledger_currency_and_updated_at(db) == (
-            None,
-            datetime(2026, 5, 13, 10, tzinfo=UTC),
+        raw = db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall()
+        assert _ledger_currency(db) == "GBP"
+        db.execute(
+            "UPDATE prep.int_accounts__merged SET currency_code = NULL WHERE account_id = ?",
+            [_ACCOUNT_ID],
+        )
+        _publish_currency(db, None)
+
+        assert InvestmentEventMembersRepo(db).active_members() == []
+        assert (
+            db.execute(
+                "SELECT investment_transaction_id FROM core.fct_investment_transactions"
+            ).fetchall()
+            == []
+        )
+        assert db.execute(
+            "SELECT currency_code FROM raw.manual_investment_transactions"
+        ).fetchone() == (None,)
+        assert (
+            db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall()
+            == raw
         )
 
     def test_own_currency_ignores_newer_account_freshness(self, db: Database) -> None:
@@ -253,15 +330,27 @@ class TestInvestmentEventCurrencyInheritance:
             created_at="2026-05-12 09:00:00+00:00",
         )
 
-        assert _ledger_currency_and_updated_at(db) == (
-            "GBP",
-            datetime(2026, 5, 12, 9, tzinfo=UTC),
+        before = _ledger_currency_and_updated_at(db)
+        history = InvestmentEventMembersRepo(db).history()
+        raw = db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall()
+        assert before[0] == "GBP"
+        db.execute(
+            "UPDATE prep.int_accounts__merged SET currency_code = 'CAD' WHERE account_id = ?",
+            [_ACCOUNT_ID],
+        )
+        _publish_currency(db, "CAD")
+
+        assert _ledger_currency_and_updated_at(db) == before
+        assert InvestmentEventMembersRepo(db).history() == history
+        assert (
+            db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall()
+            == raw
         )
 
     def test_inherited_currency_freshness_reaches_security_sale_lot(
         self, db: Database
     ) -> None:
-        """The sale loader preserves Account freshness from the actual fact view."""
+        """The sale loader preserves membership freshness from the actual fact view."""
         account_updated_at = datetime(2026, 5, 13, 10, tzinfo=UTC)
         _install_ledger_chain(
             db,
@@ -298,7 +387,42 @@ class TestInvestmentEventCurrencyInheritance:
 
         assert len(result.lots) == 1
         assert result.lots[0].currency_code == "EUR"
-        assert result.lots[0].updated_at == account_updated_at
+        published = InvestmentEventMembersRepo(db).active_members()[0]
+        assert _ledger_currency_and_updated_at(db) == (
+            "EUR",
+            published["projection_changed_at"],
+        )
+        assert result.lots[0].updated_at == published["projection_changed_at"]
+
+
+def test_live_currency_edit_requires_published_successor_membership(
+    db: Database,
+) -> None:
+    _install_ledger_chain(db, account_currency="GBP")
+    _record_event(db, currency_code=None)
+    raw = db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall()
+    before = InvestmentEventMembersRepo(db).active_members()[0]
+    projected = _ledger_currency_and_updated_at(db)
+
+    db.execute(
+        "UPDATE prep.int_accounts__merged SET currency_code = 'EUR' WHERE account_id = ?",
+        [_ACCOUNT_ID],
+    )
+    assert _ledger_currency_and_updated_at(db) == projected
+    _publish_currency(db, "EUR")
+
+    after = InvestmentEventMembersRepo(db).active_members()[0]
+    assert after["membership_id"] != before["membership_id"]
+    assert after["investment_transaction_id"] == before["investment_transaction_id"]
+    assert after["bound_effective_currency"] == "EUR"
+    assert _ledger_currency_and_updated_at(db) == (
+        "EUR",
+        after["projection_changed_at"],
+    )
+    assert after["projection_changed_at"] > before["projection_changed_at"]
+    assert (
+        db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall() == raw
+    )
 
 
 class TestManualInvestmentCurrencyIsNeverFabricated:

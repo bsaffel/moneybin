@@ -21,6 +21,7 @@ from moneybin.database import Database, sqlmesh_context
 from moneybin.metrics.registry import SQLMESH_RUN_DURATION_SECONDS
 from moneybin.seeds import refresh_views
 from moneybin.services.matching_service import MatchingService
+from moneybin.services.refresh_outcome import StageOutcome
 from moneybin.tables import DIM_ACCOUNTS, IMPORT_LOG, MODEL_FRESHNESS
 
 logger = logging.getLogger(__name__)
@@ -218,6 +219,29 @@ def _oldest_execution_scan(model_count: int) -> str:
     """  # kinds are a module constant; names are `?` placeholders
 
 
+def requires_investment_reconciliation(models: Collection[str]) -> bool:
+    """A restate that rebuilds Golden must reconcile exact membership first."""
+    from moneybin import error_codes
+    from moneybin.errors import UserError
+    from moneybin.tables import FCT_INVESTMENT_TRANSACTIONS
+
+    known = (
+        sqlmesh_registry.registered_model_names()
+        | sqlmesh_registry.external_model_names()
+    )
+    if any(name not in known for name in models):
+        raise UserError(
+            "Restatement requires exact registered model names.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+            hint="Use transform status to inspect models; use refresh --step transform for a complete rebuild.",
+        )
+    return any(
+        FCT_INVESTMENT_TRANSACTIONS.full_name
+        in sqlmesh_registry.relations_downstream_of(name)
+        for name in models
+    )
+
+
 @dataclass(frozen=True)
 class TransformFreshness:
     """Snapshot of transform freshness vs. raw imports.
@@ -252,6 +276,8 @@ class ApplyResult:
     applied: bool
     duration_seconds: float
     error: str | None = None
+    # Full applies carry their prerequisite separately from SQLMesh's own error.
+    investment_match: StageOutcome | None = None
 
 
 @dataclass(frozen=True)
@@ -295,7 +321,126 @@ class TransformService:
         """Bind to an open Database connection."""
         self._db = db
 
-    def apply(self) -> ApplyResult:
+    def bootstrap_investment_inputs(self) -> None:
+        """Build only fresh comparison/opening inputs and their ancestors."""
+        from sqlglot import exp
+
+        from moneybin import error_codes
+        from moneybin.errors import UserError
+
+        roots = {
+            "prep.int_investment_events__headers",
+            "prep.int_investment_events__legs",
+            "prep.int_investment_events__evidence",
+            "prep.stg_plaid__investment_holdings_snapshots",
+            "prep.int_plaid__opening_positions",
+            "prep.stg_plaid__opening_lots",
+        }
+        MatchingService(self._db).seed_priority()
+        with sqlmesh_context(self._db) as ctx:
+            by_relation = {
+                f"{table.db}.{table.name}": name
+                for name in ctx.models
+                for table in [exp.to_table(name)]
+            }
+            if roots - by_relation.keys():
+                raise UserError(
+                    "Required investment comparison models are missing from configuration.",
+                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                )
+            selected: set[str] = set()
+            for relation in roots:
+                name = by_relation[relation]
+                selected.add(name)
+                selected.update(ctx.dag.upstream(name))
+            selected.intersection_update(ctx.models)
+            golden = by_relation.get("core.fct_investment_transactions")
+            if golden is not None and selected & {golden, *ctx.dag.downstream(golden)}:
+                raise UserError(
+                    "Comparison bootstrap depends on Golden investment models.",
+                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                )
+            full_models = [name for name in selected if ctx.models[name].kind.is_full]
+            plan = ctx.plan(select_models=selected, no_prompts=True)
+            backfilled = _plan_backfills_full_models(
+                cast(_InitialPlan, plan), full_models
+            )
+            ctx.apply(plan)
+            status = ctx.run(select_models=selected, ignore_cron=True)
+            if status.is_failure:
+                raise RuntimeError("Investment input bootstrap run failed")
+            if full_models and not backfilled:
+                ctx.plan(
+                    select_models=selected,
+                    restate_models=full_models,
+                    start=_RESTATE_START,
+                    no_prompts=True,
+                    auto_apply=True,
+                )
+
+    def prepare_investments(
+        self, *, actor: str = "system", reconcile_membership: bool = False
+    ) -> StageOutcome:
+        """Bootstrap comparison inputs and plan before any membership reconciliation."""
+        from moneybin.errors import classify_user_error, exception_origin
+        from moneybin.services.investment_matching_service import (
+            InvestmentMatchingService,
+        )
+        from moneybin.services.investment_membership_service import (
+            InvestmentMembershipService,
+        )
+
+        try:
+            self.bootstrap_investment_inputs()
+            result = InvestmentMatchingService(self._db).run(actor=actor)
+            if reconcile_membership:
+                InvestmentMembershipService(self._db).reconcile(actor=actor)
+        except Exception as exc:  # prerequisite failure must prevent Golden apply
+            logger.error(
+                "Investment matching failed during refresh at "
+                f"{exception_origin(exc.__cause__ or exc)}"
+            )
+            classified = classify_user_error(exc)
+            return StageOutcome(
+                step="investment_match",
+                ran=True,
+                error=classified.message
+                if classified is not None
+                else "Investment matching failed — the cause is in the local log",
+                error_code=None if classified is None else classified.code,
+            )
+        return StageOutcome(
+            step="investment_match",
+            ran=True,
+            counts={
+                "pending_unique": result.pending_unique,
+                "pending_competing": result.pending_competing,
+                "stale": result.stale,
+                "suppressed": result.suppressed,
+            },
+        )
+
+    def apply(self, *, actor: str = "system") -> ApplyResult:
+        """Reconcile exact investment membership before rebuilding Golden models."""
+        investment_match = self.prepare_investments(
+            actor=actor, reconcile_membership=True
+        )
+        if investment_match.error is not None:
+            return ApplyResult(
+                applied=False,
+                duration_seconds=0.0,
+                error=investment_match.error,
+                investment_match=investment_match,
+            )
+        result = self._apply_sqlmesh()
+        return ApplyResult(
+            applied=result.applied,
+            duration_seconds=result.duration_seconds,
+            error=result.error,
+            investment_match=investment_match,
+        )
+
+    def _apply_sqlmesh(self) -> ApplyResult:
         """Apply pending SQLMesh changes.
 
         Seeds ``app.seed_source_priority`` before running so
@@ -435,6 +580,10 @@ class TransformService:
         if not requested:
             return ApplyResult(applied=True, duration_seconds=0.0)
 
+        if requires_investment_reconciliation(requested):
+            # A SQL-only restate can otherwise acknowledge Raw that membership never saw.
+            return self.apply()
+
         logger.info(f"Restating {len(requested)} transform model(s)")
         t0 = time.monotonic()
         try:
@@ -517,8 +666,10 @@ class TransformService:
         else:
             raw_ahead = landed_at > applied_at
 
+        from moneybin.investments.freshness import projection_pending
+
         return TransformFreshness(
-            pending=bool(missing_models) or raw_ahead,
+            pending=bool(missing_models) or raw_ahead or projection_pending(self._db),
             last_apply_at=self._max_dim_accounts_updated_at(),
             latest_import_at=self._max_completed_import_at(),
             missing_models=missing_models,
@@ -684,16 +835,33 @@ class TransformService:
             return None
         return row[0] if row and row[0] is not None else None
 
-    def _max_raw_landed_at(self) -> datetime | None:
-        """Latest landing time across every raw table the transforms read.
+    def _max_raw_landed_at(
+        self, *, for_models: Collection[str] | None = None
+    ) -> datetime | None:
+        """Latest Raw landing, across the project unless scoped to model ancestors.
 
         Excludes rows belonging to a reverted or failed import batch — a
         revert deletes its raw rows, but a failed ingest can leave rows
         behind, and those must not pin ``pending`` true forever. Tables that
         open no ``import_log`` batch (sync, price feeds) always pass.
         """
+        requested = set(_ALL_RAW_LANDING_COLUMNS)
+        if for_models is not None:
+            requested.intersection_update(
+                _RAW_RECEIPT_COVERAGE.get(name[4:], name[4:])
+                for model in for_models
+                for name in sqlmesh_registry.relations_upstream_of(model)
+                if name.startswith("raw.")
+            )
+        if not requested:
+            return None
+        scan = (
+            _RAW_LANDING_SCAN
+            if for_models is None
+            else _build_raw_landing_scan(requested)
+        )
         try:
-            row = self._db.execute(_RAW_LANDING_SCAN).fetchone()
+            row = self._db.execute(scan).fetchone()
         except duckdb.CatalogException:
             # One absent table must not blind the scan to the other sixteen.
             # Read-only opens never run `init_schemas`, so a raw table added
@@ -701,6 +869,7 @@ class TransformService:
             # and returning None there reports "nothing pending" for every
             # source, the exact fail-open this scan exists to close.
             present, has_import_log = self._present_raw_landing_tables()
+            present = present.intersection(requested)
             if not present:
                 return None
             row = self._db.execute(

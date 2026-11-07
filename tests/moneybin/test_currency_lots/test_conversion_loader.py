@@ -1412,7 +1412,9 @@ def test_warehouse_timestamp_parser_normalizes_offsets_and_null() -> None:
     assert module._opt_timestamp(None) is None  # pyright: ignore[reportPrivateUsage]
 
 
-@pytest.mark.parametrize("provenance", ["supported", "missing", "ambiguous"])
+@pytest.mark.parametrize(
+    "provenance", ["supported", "scoped", "wrong_side", "missing", "ambiguous"]
+)
 def test_fx_home_freshness_decodes_preserved_legacy_audit_with_provenance(
     db: Database, provenance: str
 ) -> None:
@@ -1438,10 +1440,16 @@ def test_fx_home_freshness_decodes_preserved_legacy_audit_with_provenance(
             zone=zone,
             recorded_from=datetime(2025, 1, 1, tzinfo=UTC),
             recorded_until=datetime(2026, 1, 1, tzinfo=UTC),
+            audit_id="synthetic-home"
+            if provenance in {"scoped", "wrong_side"}
+            else None,
+            image_side=("after" if provenance == "wrong_side" else "before")
+            if provenance in {"scoped", "wrong_side"}
+            else None,
         )
         for zone in (
             ["America/New_York"]
-            if provenance == "supported"
+            if provenance in {"supported", "scoped", "wrong_side"}
             else ["America/New_York", "Asia/Tokyo"]
         )
     )
@@ -1453,7 +1461,7 @@ def test_fx_home_freshness_decodes_preserved_legacy_audit_with_provenance(
             [TypeAdapter(tuple[LegacyTimeRule, ...]).dump_json(rules).decode()],
         )
     module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")
-    if provenance == "supported":
+    if provenance in {"supported", "scoped"}:
         assert module._load_home_currency(t.cast(t.Any, _DatabaseContext(db))) == (
             "USD",
             datetime(2025, 7, 1, 5, 30, 0, 123456, tzinfo=UTC),

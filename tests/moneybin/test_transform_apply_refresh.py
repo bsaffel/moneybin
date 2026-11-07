@@ -124,7 +124,7 @@ def _write_restate_regression_models(root: Path, *, include_view_column: bool) -
 
 
 def _point_transform_at(monkeypatch: pytest.MonkeyPatch, sqlmesh_root: Path) -> None:
-    """Run TransformService.apply() against a test project instead of the real one."""
+    """Use a minimal non-investment DAG for SQLMesh-stage integration checks."""
 
     @contextmanager
     def test_sqlmesh_context(database: Database):  # type: ignore[no-untyped-def]
@@ -153,12 +153,12 @@ def test_apply_restates_full_models_after_a_view_only_plan_change(
     _point_transform_at(monkeypatch, sqlmesh_root)
     db.execute("CREATE TABLE raw.restate_items (id INTEGER)")
     db.execute("INSERT INTO raw.restate_items VALUES (1)")
-    assert TransformService(db).apply().applied is True
+    assert TransformService(db)._apply_sqlmesh().applied is True  # pyright: ignore[reportPrivateUsage]  # real SQLMesh-only stage with a minimal non-investment DAG
 
     _write_restate_regression_models(sqlmesh_root, include_view_column=True)
     db.execute("INSERT INTO raw.restate_items VALUES (2)")
 
-    assert TransformService(db).apply().applied is True
+    assert TransformService(db)._apply_sqlmesh().applied is True  # pyright: ignore[reportPrivateUsage]  # real SQLMesh-only stage with a minimal non-investment DAG
     assert db.execute("SELECT id FROM core.restate_items ORDER BY id").fetchall() == [
         (1,),
         (2,),
@@ -169,7 +169,7 @@ def test_apply_restates_full_models_after_a_view_only_plan_change(
 def test_apply_does_not_restate_after_a_fresh_plan(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A fresh plan materializes FULL models without a follow-up restate."""
+    """A fresh SQLMesh-stage plan materializes FULL models without a follow-up restate."""
     plan_calls: list[dict[str, object]] = []
     original_plan = Context.plan
 
@@ -189,7 +189,7 @@ def test_apply_does_not_restate_after_a_fresh_plan(
         extracted_at="2026-06-01 12:00:00",
     )
 
-    result = TransformService(db).apply()
+    result = TransformService(db)._apply_sqlmesh()  # pyright: ignore[reportPrivateUsage]  # verify real initial SQLMesh plan without prior prerequisite bootstrap
 
     assert result.applied, f"fresh apply failed: {result.error}"
     assert plan_calls == [{"no_prompts": True}]
@@ -309,11 +309,11 @@ def test_apply_drops_a_view_whose_model_was_removed(
     db.execute("CREATE TABLE raw.demotion_base (id INTEGER)")
     db.execute("INSERT INTO raw.demotion_base VALUES (1)")
 
-    assert TransformService(db).apply().applied is True
+    assert TransformService(db)._apply_sqlmesh().applied is True  # pyright: ignore[reportPrivateUsage]  # real SQLMesh-only stage with a minimal non-investment DAG
     assert "demotion_queue" in _core_views(db)
 
     _write_demotion_models(sqlmesh_root, include_view=False)
-    assert TransformService(db).apply().applied is True
+    assert TransformService(db)._apply_sqlmesh().applied is True  # pyright: ignore[reportPrivateUsage]  # real SQLMesh-only stage with a minimal non-investment DAG
 
     assert "demotion_queue" not in _core_views(db)
     assert db.execute("SELECT id FROM core.demotion_base").fetchall() == [(1,)]

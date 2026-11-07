@@ -755,7 +755,7 @@ view, but only where someone is already looking at that position; nothing
 surfaces it in the place users go to ask "is anything wrong with my data?"
 Earlier drafts of this spec pointed at "the unresolved-security backlog" for this
 case, but the check bearing that name (`investment_unresolved_securities`) scans
-the *transaction ledger* for events whose security never resolved and never
+current Source legs for events whose security never resolved and never
 examines price rows, so the safety net it implied does not exist. The new check
 closes that gap: an open position carrying no usable price on the current
 valuation date, reported with the securities affected.

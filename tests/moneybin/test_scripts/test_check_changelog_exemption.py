@@ -13,6 +13,10 @@ from scripts.check_changelog_exemption import (
 )
 
 BASE = """\
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "moneybin"
 version = "0.2.0"
@@ -48,6 +52,11 @@ FLOOR_RAISE = BASE.replace("fastmcp>=4.0.8,<5", "fastmcp>=4.1.0,<5").replace(
             BASE.replace('docs = ["mkdocs>=1.6.0"]', 'docs = ["mkdocs>=1.7.0"]'),
             id="optional-dependency",
         ),
+        pytest.param(
+            ["pyproject.toml"],
+            BASE.replace("setuptools>=77.0", "setuptools>=84.2.1"),
+            id="build-requirement",
+        ),
     ],
 )
 def test_exempts_dependabot_dependency_updates(changed: list[str], head: str) -> None:
@@ -70,6 +79,10 @@ def test_refuses_a_file_outside_the_dependency_manifests() -> None:
     [
         pytest.param(BASE.replace('"0.2.0"', '"0.3.0"'), id="version"),
         pytest.param(BASE.replace("88", "100"), id="tool-config"),
+        pytest.param(
+            BASE.replace("setuptools.build_meta", "hatchling.build"),
+            id="build-backend",
+        ),
     ],
 )
 def test_refuses_a_pyproject_edit_outside_the_dependency_tables(head: str) -> None:

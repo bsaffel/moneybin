@@ -41,14 +41,35 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.services.transform_service import TransformService
+from tests.moneybin.test_investments.comparison_helpers import seed_account_metadata
 
 pytestmark = pytest.mark.integration
 
 _ACCOUNT_ID = "acct_inv_1"
 _SECURITY_ID = "sec_inv_1"
-# MAX over the two ledger rows' created_at -> the updated_at every derived row
-# inherits (core-updated-at convention: MAX of inputs, never CURRENT_TIMESTAMP).
+# Retained source time is a lower bound on the committed projection watermark.
 _SELL_CREATED_AT = datetime(2024, 7, 2, 10, 0, 0, tzinfo=UTC)
+
+
+def _golden_transaction_id(db: Database, native_reference: str) -> str:
+    row = db.execute(
+        """SELECT investment_transaction_id FROM app.investment_event_members
+        WHERE source_type = 'manual' AND native_reference = ?
+          AND retired_at IS NULL""",
+        [native_reference],
+    ).fetchone()
+    assert row is not None, f"no active Golden membership for {native_reference}"
+    return str(row[0])
+
+
+def _projection_changed_at(db: Database) -> datetime:
+    row = db.execute(
+        """SELECT MAX(projection_changed_at) FROM app.investment_event_members
+        WHERE retired_at IS NULL"""
+    ).fetchone()
+    assert row is not None and isinstance(row[0], datetime)
+    assert row[0] >= _SELL_CREATED_AT
+    return row[0]
 
 
 def _insert_security(db: Database) -> None:
@@ -73,6 +94,7 @@ def _insert_investment_txn(
     created_at: str,
 ) -> None:
     """Seed one manual investment row (decimals/dates cast to their target types)."""
+    seed_account_metadata(db, _ACCOUNT_ID, currency="USD")
     db.execute(
         """
         INSERT INTO raw.manual_investment_transactions
@@ -124,6 +146,7 @@ def test_transform_builds_investment_lots_gains_and_holdings(db: Database) -> No
 
     result = TransformService(db).apply()
     assert result.applied, f"transform apply failed: {result.error}"
+    projection_changed_at = _projection_changed_at(db)
 
     # --- core.fct_investment_lots -------------------------------------------
     lots = db.execute(
@@ -157,7 +180,7 @@ def test_transform_builds_investment_lots_gains_and_holdings(db: Database) -> No
     assert acquisition_type == "buy"
     assert is_open is True
     assert str(acquisition_date) == "2024-01-01"
-    assert lot_updated_at == _SELL_CREATED_AT
+    assert lot_updated_at == projection_changed_at
 
     # --- core.fct_realized_gains --------------------------------------------
     gains = db.execute(
@@ -185,7 +208,7 @@ def test_transform_builds_investment_lots_gains_and_holdings(db: Database) -> No
     assert term == "short"
     assert basis_incomplete is False
     assert gain_method == "fifo"
-    assert gain_updated_at == _SELL_CREATED_AT
+    assert gain_updated_at == projection_changed_at
 
     # --- core.dim_holdings ---------------------------------------------------
     holdings = db.execute(
@@ -210,7 +233,7 @@ def test_transform_builds_investment_lots_gains_and_holdings(db: Database) -> No
     )
     assert average_cost == Decimal("0.0000810000")
     assert currency_code == "USD"
-    assert holding_updated_at == _SELL_CREATED_AT
+    assert holding_updated_at == projection_changed_at
 
 
 @pytest.mark.slow
@@ -317,21 +340,25 @@ def test_transform_specific_id_selection_redirects_consumption(db: Database) -> 
         amount="200.00",
         created_at="2024-03-01 10:00:00",
     )
+    result = TransformService(db).apply()
+    assert result.applied, f"initial transform apply failed: {result.error}"
+    newer_buy_id = _golden_transaction_id(db, "manual_buy_new")
+    sell_id = _golden_transaction_id(db, "manual_sell_1")
     # lot_id is a content hash of (account_id, security_id, acquisition_date,
     # opening txn id) — computed inline (not imported) to match how the other
     # tests in this suite independently derive expected ids, per testing.md.
     newer_lot_id = (
         "lot_"
         + hashlib.sha256(
-            f"{_ACCOUNT_ID}|{_SECURITY_ID}|2024-02-01|inv_buy_new".encode()
+            f"{_ACCOUNT_ID}|{_SECURITY_ID}|2024-02-01|{newer_buy_id}".encode()
         ).hexdigest()[:16]
     )
     db.execute(
         """
         INSERT INTO app.lot_selections (investment_transaction_id, lot_id, quantity)
-        VALUES ('inv_sell_1', ?, 5)
+        VALUES (?, ?, 5)
         """,  # test fixture, not executing user SQL
-        [newer_lot_id],
+        [sell_id, newer_lot_id],
     )
 
     result = TransformService(db).apply()
@@ -403,8 +430,8 @@ def test_transform_method_change_retroactively_rewrites_realized_gains(
     result = TransformService(db).apply()
     assert result.applied, f"transform apply failed: {result.error}"
     fifo_cost_basis = db.execute(
-        "SELECT cost_basis FROM core.fct_realized_gains "
-        "WHERE disposal_txn_id = 'inv_sell_1'"
+        "SELECT cost_basis FROM core.fct_realized_gains WHERE disposal_txn_id = ?",
+        [_golden_transaction_id(db, "manual_sell_1")],
     ).fetchone()
     assert fifo_cost_basis is not None
     # 5 units at the older lot's $10/unit.
@@ -417,8 +444,8 @@ def test_transform_method_change_retroactively_rewrites_realized_gains(
     result = TransformService(db).apply()
     assert result.applied, f"transform apply failed: {result.error}"
     hifo_cost_basis = db.execute(
-        "SELECT cost_basis FROM core.fct_realized_gains "
-        "WHERE disposal_txn_id = 'inv_sell_1'"
+        "SELECT cost_basis FROM core.fct_realized_gains WHERE disposal_txn_id = ?",
+        [_golden_transaction_id(db, "manual_sell_1")],
     ).fetchone()
     assert hifo_cost_basis is not None
     # Same already-realized disposal, no new transactions — but the FULL

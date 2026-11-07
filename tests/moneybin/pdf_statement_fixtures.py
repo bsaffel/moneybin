@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -45,3 +46,219 @@ def write_card_statement_pdf(tmp_path: Path, *, month: str = "01") -> Path:
 def write_checking_statement_pdf(tmp_path: Path) -> Path:
     """The card statement's twin with no card disclosures: -50.00 debit, +150.00 credit."""
     return _copy("chase_checking_2024_01", tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Disclosure-consent canary statement (synthetic; generated, not committed)
+# ---------------------------------------------------------------------------
+
+#: Values seeded into the canary statement. None of them may reach any
+#: emission before consent; after consent the account and SSN must be redacted.
+#: Sinks carry random hex ids and timestamps, so a digit-only canary is at least
+#: eight digits (a 4-digit one matched inside a hash); the others carry a
+#: letter, ``-`` or ``.`` that no hex run holds.
+CANARY_DESCRIPTION = "CANARYWREN BAKERY"
+CANARY_AMOUNT = "-47.31"
+CANARY_ACCOUNT_NUMBER = "3141 59268979 5358"
+CANARY_ACCOUNT_MIDDLE = "59268979"
+CANARY_ACCOUNT_LAST_FOUR = "5358"
+CANARY_SSN = "900-12-3456"
+CANARY_SSN_PREFIX = "900-12"
+CANARY_ROUTING = "021000021"
+CANARIES = (
+    CANARY_DESCRIPTION,
+    CANARY_AMOUNT,
+    CANARY_ACCOUNT_MIDDLE,
+    CANARY_SSN_PREFIX,
+    CANARY_ROUTING,
+)
+
+#: A bridge response that reconciles against the canary statement.
+CANARY_RECIPE: dict[str, Any] = {
+    "metadata_anchors": [
+        {
+            "name": "account_id",
+            "pattern": r"Account\s+Number:\s+([X\d]{4} [X\d]{8} \d{4})",
+            "cast": "str",
+        },
+        {
+            "name": "period_start",
+            "pattern": r"Statement\s+Period:\s+(\d{2}/\d{2}/\d{4})",
+            "cast": "date",
+            "date_format": "%m/%d/%Y",
+        },
+        {
+            "name": "period_end",
+            "pattern": r"to\s+(\d{2}/\d{2}/\d{4})",
+            "cast": "date",
+            "date_format": "%m/%d/%Y",
+        },
+        {
+            "name": "opening_balance",
+            "pattern": r"Opening\s+Funds:\s+\$([\d,]+\.\d{2})",
+            "cast": "decimal",
+        },
+        {
+            "name": "closing_balance",
+            "pattern": r"Closing\s+Funds:\s+\$([\d,]+\.\d{2})",
+            "cast": "decimal",
+        },
+    ],
+    "row_region": {"start_anchor": "Date", "end_anchor": "@@END@@"},
+    "row_split": r"\s{2,}",
+    "fields": [
+        {
+            "name": "date",
+            "pattern": r"\d{2}/\d{2}/\d{4}",
+            "cast": "date",
+            "date_format": "%m/%d/%Y",
+        },
+        {"name": "description", "pattern": r".+", "cast": "str"},
+        {"name": "amount", "pattern": r"-?[\d,]+\.\d{2}", "cast": "decimal"},
+    ],
+    "sign_convention": "negative_is_expense",
+    "routing": "transactions",
+}
+CANARY_ROWS = [
+    {"date": "01/03/2024", "description": CANARY_DESCRIPTION, "amount": "-47.31"},
+    {"date": "01/10/2024", "description": "PAYROLL DEPOSIT", "amount": "1500.00"},
+    {"date": "01/20/2024", "description": "UTILITY PAYMENT", "amount": "-152.69"},
+]
+
+# Balances use labels DEFAULT_ANCHORS does not know, so the deterministic rung
+# routes to `metadata_incomplete` (bridge-eligible). The rows reconcile:
+# -47.31 + 1500.00 - 152.69 = 1300.00 = 3300.00 - 2000.00.
+_CANARY_LINES: tuple[tuple[float, float, str], ...] = (
+    (72, 756, f"Routing Number: {CANARY_ROUTING}"),
+    (72, 740, "Canary Savings Union"),
+    (72, 724, f"Account Number: {CANARY_ACCOUNT_NUMBER}"),
+    (72, 708, f"Primary SSN: {CANARY_SSN}"),
+    (72, 692, "Statement Period: 01/01/2024 to 01/31/2024"),
+    (72, 676, "Opening Funds: $2000.00"),
+    (72, 660, "Closing Funds: $3300.00"),
+    (72, 636, "ACCOUNT ACTIVITY"),
+    (72, 616, "Date"),
+    (168, 616, "Description"),
+    (360, 616, "Amount"),
+    (72, 600, "01/03/2024"),
+    (168, 600, CANARY_DESCRIPTION),
+    (360, 600, CANARY_AMOUNT),
+    (72, 584, "01/10/2024"),
+    (168, 584, "PAYROLL DEPOSIT"),
+    (360, 584, "1500.00"),
+    (72, 568, "01/20/2024"),
+    (168, 568, "UTILITY PAYMENT"),
+    (360, 568, "-152.69"),
+)
+
+
+def _pdf_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+# Ruling lines around the activity block, so pdfplumber also finds a table
+# (the seed path needs one); columns x, row edges y.
+_CANARY_RULE_XS = (72, 168, 360, 456)
+_CANARY_RULE_YS = (628, 612, 596, 580, 564)
+
+
+def _minimal_pdf(
+    lines: tuple[tuple[float, float, str], ...],
+    *,
+    rule_xs: tuple[float, ...] = (),
+    rule_ys: tuple[float, ...] = (),
+) -> bytes:
+    """One letter page of Courier text; no third-party PDF writer needed."""
+    ops = [
+        f"BT /F1 10 Tf {x:g} {y:g} Td ({_pdf_escape(text)}) Tj ET"
+        for x, y, text in lines
+    ]
+    if rule_xs and rule_ys:
+        ops.append("0.5 w")
+        ops += [f"{rule_xs[0]} {y} m {rule_xs[-1]} {y} l S" for y in rule_ys]
+        ops += [f"{x} {rule_ys[0]} m {x} {rule_ys[-1]} l S" for x in rule_xs]
+    stream = "\n".join(ops).encode("latin-1")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>",
+        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objects) + 1,
+        xref,
+    )
+    return bytes(out)
+
+
+def write_canary_statement_pdf(tmp_path: Path) -> Path:
+    """A native-text statement whose deterministic parse is bridge-eligible."""
+    dest = tmp_path / "canary_statement.pdf"
+    dest.write_bytes(
+        _minimal_pdf(_CANARY_LINES, rule_xs=_CANARY_RULE_XS, rule_ys=_CANARY_RULE_YS)
+    )
+    return dest
+
+
+def write_scanned_statement_pdf(tmp_path: Path) -> Path:
+    """A PDF with no text layer, as a scanned statement presents."""
+    dest = tmp_path / "scanned_statement.pdf"
+    dest.write_bytes(_minimal_pdf(()))
+    return dest
+
+
+def write_canary_replay_failure_pdf(tmp_path: Path) -> Path:
+    """The canary layout with a closing balance the saved recipe cannot reconcile."""
+    lines = tuple(
+        (x, y, "Closing Funds: $9999.00" if text.startswith("Closing Funds") else text)
+        for x, y, text in _CANARY_LINES
+    )
+    dest = tmp_path / "canary_replay_failure.pdf"
+    dest.write_bytes(
+        _minimal_pdf(lines, rule_xs=_CANARY_RULE_XS, rule_ys=_CANARY_RULE_YS)
+    )
+    return dest
+
+
+_DETERMINISTIC_LINES: tuple[tuple[float, float, str], ...] = (
+    (72, 740, "Canary Savings Union"),
+    (72, 724, f"Account Number: {CANARY_ACCOUNT_NUMBER}"),
+    (72, 692, "Statement Period: 01/01/2024 to 01/31/2024"),
+    (72, 676, "Beginning Balance: $2000.00"),
+    (72, 660, "Ending Balance: $3300.00"),
+    (72, 616, "Date"),
+    (168, 616, f"Description {CANARY_ACCOUNT_NUMBER}"),
+    (456, 616, "Amount"),
+    (72, 600, "01/03/2024"),
+    (168, 600, CANARY_DESCRIPTION),
+    (456, 600, CANARY_AMOUNT),
+    (72, 584, "01/10/2024"),
+    (168, 584, "PAYROLL DEPOSIT"),
+    (456, 584, "1500.00"),
+    (72, 568, "01/20/2024"),
+    (168, 568, "UTILITY PAYMENT"),
+    (456, 568, "-152.69"),
+)
+
+
+def write_canary_deterministic_pdf(tmp_path: Path) -> Path:
+    """A statement the deterministic rung parses, with an account number in a header."""
+    dest = tmp_path / "canary_deterministic.pdf"
+    dest.write_bytes(
+        _minimal_pdf(
+            _DETERMINISTIC_LINES,
+            rule_xs=(72, 168, 456, 540),
+            rule_ys=(628, 612, 596, 580, 564),
+        )
+    )
+    return dest

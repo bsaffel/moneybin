@@ -1201,7 +1201,7 @@
   ]
  },
  "extractors/tabular/schema/raw_tabular_accounts.sql": {
-  "sha256": "0a22ad51ff78d94b6eda907190f36235c0515a45e7ca46e99ad6d418e9cb6d74",
+  "sha256": "05171ea21d2e70c6e9ab5838c148181e2e513275c85d7f07763af75348eb4ac7",
   "plan": [
    {
     "schema_name": "raw",
@@ -1243,7 +1243,7 @@
      ],
      [
       "source_file",
-      "Absolute path to the imported file that created or updated this account record"
+      "Source path or locator supplied to the extractor; not necessarily absolute"
      ],
      [
       "source_type",
@@ -1270,7 +1270,7 @@
   ]
  },
  "extractors/tabular/schema/raw_tabular_transactions.sql": {
-  "sha256": "4af63989164b02919a5dc28acf0e1f433fc31c11ab50f6d2b9615f26ff2f7267",
+  "sha256": "8b71724aa84fa99ca8a23aab9e8a0a469f9801f453540650db5ac64c8c9b4645",
   "plan": [
    {
     "schema_name": "raw",
@@ -1280,7 +1280,7 @@
     "column_comments": [
      [
       "transaction_id",
-      "Deterministic identifier: source_transaction_id when available, else SHA-256 hash of date|amount|description|account_id|row_number"
+      "Deterministic identifier: account_id:source_transaction_id when available, else source-prefixed SHA-256 of date|amount|description|account_id; only repeated identical content adds an occurrence suffix"
      ],
      [
       "account_id",
@@ -1356,7 +1356,7 @@
      ],
      [
       "source_file",
-      "Absolute path to the imported file at time of extraction"
+      "Source path or locator supplied to the extractor; not necessarily absolute"
      ],
      [
       "source_type",
@@ -1372,7 +1372,7 @@
      ],
      [
       "row_number",
-      "1-based row/line number in the source file; invaluable for debugging import issues and deterministic hash generation"
+      "1-based row/line number in the source file for import diagnostics; never contributes to transaction identity"
      ],
      [
       "extracted_at",
@@ -1594,13 +1594,13 @@
   ]
  },
  "sql/schema/app_ai_consent_grants.sql": {
-  "sha256": "bc2e5cb4d907ac7b368ab2f148d9533512d588422e94eea0207c087375222ea5",
+  "sha256": "79b791a553de3878d05d732ee0ecfcdb2ca59abac9980c5e672137c6ca582619",
   "plan": [
    {
     "schema_name": "app",
     "table_name": "ai_consent_grants",
     "table_sql": "app.ai_consent_grants",
-    "table_comment": "Consent ledger: one row per granted (feature_category, backend) authorization for sending real financial data to an AI backend. Persisted record + user control surface; the data-withholding enforcement gate is deferred (ledger-first, see privacy-and-ai-trust.md). All mutations route through ConsentRepo to emit paired app.audit_log rows per app-integrity-invariant.md. Revoked grants are retained (revoked_at set) for audit history.",
+    "table_comment": "Consent ledger: one row per granted (feature_category, backend, recipient_kind) authorization for sending real financial data to an AI backend or, for ai_host rows, to the AI app that reads MoneyBin output. Persisted record + user control surface. smart-import-parsing is enforced: the PDF disclosure gate sends PDF content to an AI host only under an active ai_host grant (see pdf-disclosure-consent.md); every other category remains record-only (ledger-first, enforcement gate deferred, see privacy-and-ai-trust.md). All mutations route through ConsentRepo to emit paired app.audit_log rows per app-integrity-invariant.md. Revoked grants are retained (revoked_at set) for audit history.",
     "column_comments": [
      [
       "grant_id",
@@ -1612,7 +1612,7 @@
      ],
      [
       "backend",
-      "AI backend this consent applies to (e.g. anthropic, openai, ollama); consent is per (feature_category, backend)"
+      "Recipient this consent applies to: an AI backend name (e.g. anthropic, openai, ollama) when recipient_kind='ai_backend', or the host recipient key (transport-class:name, e.g. local:claude-code) when recipient_kind='ai_host'; consent is per (feature_category, backend, recipient_kind)"
      ],
      [
       "consent_mode",
@@ -1625,6 +1625,26 @@
      [
       "revoked_at",
       "When revoked; NULL while active. Revoked rows are retained for audit history."
+     ],
+     [
+      "grant_prompt",
+      "Exact consent text the user saw and agreed to (source of truth for \"what did I consent to?\"); not surfaced in read payloads"
+     ],
+     [
+      "recipient_kind",
+      "Kind of recipient the backend column names: ai_backend (a model vendor, set by privacy grant --backend) or ai_host (the AI app reading the output, keyed transport-class:name such as local:claude-code); consent is per (feature_category, backend, recipient_kind)"
+     ],
+     [
+      "terms_version",
+      "Vendor terms version the user consented under (ai_host rows only; NULL for ai_backend); a release that changes the shipped terms stops honoring the grant"
+     ],
+     [
+      "approved_via",
+      "Surface that recorded the consent, e.g. cli_prompt (ai_host rows only; NULL for ai_backend)"
+     ],
+     [
+      "redaction_policy_version",
+      "Redaction policy version the user consented under (ai_host rows only; NULL for ai_backend); a release that changes the redaction policy stops honoring the grant"
      ]
     ]
    }
@@ -2407,6 +2427,103 @@
    }
   ]
  },
+ "sql/schema/app_investment_event_members.sql": {
+  "sha256": "0a0d576ce6d8e54d8cfff3dc09d7e2b53c7f7e2a9bcd4758fa766698d1226105",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "investment_event_members",
+    "table_sql": "app.investment_event_members",
+    "table_comment": "Exact source membership, immutable canonical bindings and Golden identity history.",
+    "column_comments": [
+     [
+      "membership_id",
+      "Identity of this immutable membership revision"
+     ],
+     [
+      "event_group_id",
+      "MoneyBin-owned Golden economic event"
+     ],
+     [
+      "investment_transaction_id",
+      "MoneyBin-owned Golden semantic leg"
+     ],
+     [
+      "member_kind",
+      "Source-backed or reconstructed membership"
+     ],
+     [
+      "source_event_key",
+      "Complete adapter-constructed Source event"
+     ],
+     [
+      "source_type",
+      "Comparison adapter type"
+     ],
+     [
+      "source_origin",
+      "Source identity scope"
+     ],
+     [
+      "native_reference",
+      "Stable source row or reconstruction key"
+     ],
+     [
+      "observation_version",
+      "Exact immutable observation or reconstruction revision"
+     ],
+     [
+      "semantic_leg_role",
+      "Correspondence within the complete economic event"
+     ],
+     [
+      "bound_account_id",
+      "Account selected at publication"
+     ],
+     [
+      "bound_security_id",
+      "Security selected at publication; NULL for cash-only legs"
+     ],
+     [
+      "bound_effective_currency",
+      "Exact denomination selected at publication"
+     ],
+     [
+      "currency_source",
+      "Explicit source denomination or inherited Account currency"
+     ],
+     [
+      "account_generation",
+      "Producing Account identity dependency generation"
+     ],
+     [
+      "security_generation",
+      "Producing Security identity dependency generation"
+     ],
+     [
+      "currency_generation",
+      "Producing Currency dependency generation"
+     ],
+     [
+      "decision_id",
+      "Owning accepted Match; NULL for standalone membership"
+     ],
+     [
+      "reconstruction_evidence",
+      "Exact reconstruction evidence references and algorithm version, never an observation-value snapshot"
+     ],
+     [
+      "created_at",
+      "Initial activation time"
+     ],
+     [
+      "retired_at",
+      "Retirement time; NULL while active"
+     ]
+    ]
+   }
+  ]
+ },
  "sql/schema/app_investment_match_decisions.sql": {
   "sha256": "3969872cde1d38c7235449caf9773402acecc23c18787611a5440c7e47e8a716",
   "plan": [
@@ -2471,6 +2588,59 @@
      [
       "accepted_at",
       "Ratification time; NULL throughout review-only rollout"
+     ]
+    ]
+   }
+  ]
+ },
+ "sql/schema/app_investment_match_field_resolutions.sql": {
+  "sha256": "0e6c205891ca644261dfd172631946253ce81a816c790fc28f6184e71502e8d6",
+  "plan": [
+   {
+    "schema_name": "app",
+    "table_name": "investment_match_field_resolutions",
+    "table_sql": "app.investment_match_field_resolutions",
+    "table_comment": "Explicit selected fields retain exact source provenance, not copied observations.",
+    "column_comments": [
+     [
+      "resolution_id",
+      "Identity of this selected field revision"
+     ],
+     [
+      "decision_id",
+      "Human-accepted Match owning this resolution"
+     ],
+     [
+      "investment_transaction_id",
+      "Golden semantic leg receiving the field"
+     ],
+     [
+      "field_name",
+      "Validated proposal-issued field"
+     ],
+     [
+      "source_type",
+      "Selected comparison adapter"
+     ],
+     [
+      "source_origin",
+      "Selected source scope"
+     ],
+     [
+      "native_reference",
+      "Selected stable source row"
+     ],
+     [
+      "observation_version",
+      "Selected exact immutable source revision"
+     ],
+     [
+      "created_at",
+      "Selection publication time"
+     ],
+     [
+      "retired_at",
+      "Retirement time; NULL while selected"
      ]
     ]
    }

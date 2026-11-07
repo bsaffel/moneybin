@@ -9,10 +9,68 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.errors import RecoveryAction
 from moneybin.services.doctor_service import DoctorReport, InvariantResult
 
 runner = CliRunner()
+
+
+@pytest.mark.parametrize("profile", ["sample profile", "sample " + "p" * 110])
+def test_doctor_recovery_keeps_quoted_command_whole_under_ascii_quiet(
+    monkeypatch: pytest.MonkeyPatch, profile: str
+) -> None:
+    from moneybin.cli.utils import generated_cli_command
+
+    policy = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=100,
+        height=24,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+    monkeypatch.setattr(
+        "moneybin.cli.commands.system.doctor.get_terminal_policy", lambda: policy
+    )
+    action = RecoveryAction(
+        tool="system_status",
+        arguments={"sections": ["doctor"]},
+        rationale=(
+            "Run the integrity checks again after completing the recovery and "
+            "review the resulting invariant status to verify."
+        ),
+        confidence="suggested",
+        idempotent=True,
+    )
+    report = DoctorReport(
+        invariants=[InvariantResult("test_integrity", "fail", None, [], [action])],
+        transaction_count=1,
+    )
+    with (
+        patch("moneybin.cli.commands.system.doctor.get_database"),
+        patch("moneybin.cli.commands.system.doctor.DoctorService") as service,
+    ):
+        service.return_value.run_all.return_value = report
+        result = runner.invoke(
+            app, ["--profile", profile, "system", "doctor", "--quiet"]
+        )
+    monkeypatch.setattr("moneybin.cli.utils._flags.profile", profile)
+    command = generated_cli_command("system", "doctor")
+
+    assert result.exit_code == 1, result.output
+    assert any(line.strip() == command for line in result.output.splitlines())
+    assert "Suggested: Run the integrity checks" in result.output
+    assert "Consider Run" not in result.output
+    assert "verify.:" not in result.output
+    assert "›" not in result.output
+
 
 _PASSING_REPORT = DoctorReport(
     invariants=[
@@ -371,7 +429,7 @@ def test_doctor_text_renders_recovery_action_hints(
     """Failing invariants render a rationale and, when one exists, a runnable command.
 
     Neither the raw MCP tool name nor the JSON arguments leak into the text
-    surface: a `[suggested]` action reads "Consider <rationale>", and a
+    surface: a `[suggested]` action reads "Suggested: <rationale>", and a
     request the CLI can express (note_delete) ends the line with a copyable
     `moneybin ...` command, per requirement 7.
     """
@@ -381,7 +439,7 @@ def test_doctor_text_renders_recovery_action_hints(
     assert result.exit_code == 1
     assert "transactions_annotate" not in result.output
     assert (
-        "Consider Delete orphan note n1.: moneybin transactions notes delete n1"
+        "Suggested: Delete orphan note n1: moneybin transactions notes delete n1"
         in result.output
     )
     # tags_set clearing to an exact empty set has no CLI primitive — the
@@ -494,8 +552,8 @@ def test_doctor_text_maps_an_accounts_set_fix_to_its_command(
 
     output = " ".join(result.output.split())  # the receipt wraps at terminal width
     assert (
-        "Consider keep the recorded history: "
+        "Suggested: keep the recorded history: "
         "moneybin accounts set acc_choice --investment-source-type manual"
     ) in output
-    assert "Consider rename it" in output
-    assert "Consider rename it: moneybin" not in output
+    assert "Suggested: rename it" in output
+    assert "Suggested: rename it: moneybin" not in output

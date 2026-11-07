@@ -167,7 +167,7 @@ def test_registration_inventory_keeps_generated_reports_aliases_and_no_assets_le
     """An accidental registration change must not evade the hand-written help list."""
     leaves = set(_leaves(get_command(app)))
 
-    assert len(leaves) == 210
+    assert len(leaves) == 211
     assert ("assets",) not in leaves
     assert {
         ("sync", "connect"),
@@ -337,6 +337,7 @@ def test_every_declared_finite_read_keeps_the_shared_human_and_agent_controls() 
             accounts set
             categories create
             categories delete
+            categories mappings remove
             categories mappings set
             categories set
             db init
@@ -452,7 +453,10 @@ def test_native_artifact_and_callback_modes_keep_their_explicit_exceptions() -> 
     root = get_command(app)
     assert isinstance(root, TyperGroup)
     assert "--no-pager" not in _options(root, ("db", "query"))
-    assert "--output" not in _options(root, ("import", "preview"))
+    # pdf-disclosure-consent.md §3: PDF previews emit a JSON envelope; never paged.
+    preview = _options(root, ("import", "preview"))
+    assert "--output" in preview
+    assert "--no-pager" not in preview
     assert "--output" not in _options(root, ("privacy", "redact"))
     assert "--output" not in _options(root, ("mcp", "install"))
     assert "--no-pager" not in _options(root, ("mcp", "serve"))

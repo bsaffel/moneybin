@@ -207,7 +207,10 @@ and sample rows.
 
 PDF statements: runs the deterministic recipe rung and reports whether
 the statement extracts cleanly, how many rows it would yield, and any
-pending sign-convention confirmation. Nothing is imported either way.
+pending sign-convention confirmation. A statement that needs AI help sends
+nothing until the person consents (a terminal prompt, a remembered consent,
+or --allow-ai-disclosure); then it prints the redacted text for the AI app.
+Nothing is imported either way. --output json applies to PDFs only.
 
 Examples:
 
@@ -215,6 +218,7 @@ Examples:
 moneybin import preview ~/Downloads/chase_activity.csv
 moneybin import preview ~/Downloads/transactions.xlsx --sheet Sheet1
 moneybin import preview ~/Downloads/chase_statement.pdf
+moneybin import preview statement.pdf --allow-ai-disclosure 0123456789abcdef -o json
 ```
 
 Usage: `moneybin import preview [OPTIONS] {file_path}`
@@ -239,6 +243,8 @@ Usage: `moneybin import preview [OPTIONS] {file_path}`
 | `--no-size-limit` | flag |  | Override file size limit (carry over from the 'import files' call). |
 | `--override` | text, repeatable |  | Field→column override, repeatable (e.g. --override date=Date) |
 | `--omit-field` | text, repeatable |  | Omit an optional destination field, repeatable. Tabular files only. |
+| `--allow-ai-disclosure` | text |  | PDF only: consent to send this statement's text to the AI app; only the account numbers, routing numbers and SSNs MoneyBin identified are redacted. REQUEST_ID comes from a preview without this flag; pass it only after the person agrees to that preview's risk statement. |
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 
 ## moneybin import status
 

@@ -22,7 +22,11 @@ from moneybin.privacy.payloads.categories import (
     MerchantsPayload,
 )
 from moneybin.protocol.pagination import encode_keyset_cursor
-from moneybin.protocol.write_contracts import CategoryStateRequest, MerchantStateRequest
+from moneybin.protocol.write_contracts import (
+    CategoryStateRequest,
+    MerchantStateRequest,
+    SourceCategoryStateRequest,
+)
 from moneybin.services.categorization import CategorizationService
 
 from .schema_assertions import (
@@ -62,6 +66,164 @@ async def test_taxonomy_batch_routes_category_and_merchant_targets() -> None:
         "category",
         "merchant",
     ]
+
+
+def _import_coffee_term() -> None:
+    """One imported csv row carrying the 'Coffee Shops' term, ready to categorize."""
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+        db.execute(
+            "CREATE TABLE prep.int_transactions__matched (transaction_id VARCHAR, "
+            "source_transaction_id VARCHAR, source_type VARCHAR, "
+            "source_origin VARCHAR, category VARCHAR, subcategory VARCHAR)"
+        )
+        db.execute(
+            "INSERT INTO prep.int_transactions__matched VALUES "
+            "('t1', 't1', 'csv', 'chase_credit', 'Coffee Shops', NULL)"
+        )
+        db.execute(
+            "INSERT INTO core.fct_transactions (transaction_id, amount, "
+            "transaction_date) VALUES ('t1', -4.50, '2026-01-01')"
+        )
+
+
+_COFFEE_TERM: dict[str, Any] = {
+    "kind": "source_category",
+    "source_origin": "chase_credit",
+    "source_category_code": "Coffee Shops",
+}
+
+
+async def test_source_category_round_trip_from_review_to_removal() -> None:
+    """A pending term is mapped in one batch, read back as history, then removed."""
+    from moneybin.mcp.tools.reviews import reviews_coarse
+    from moneybin.mcp.tools.system import system_audit_undo
+
+    _import_coffee_term()
+    pending = await reviews_coarse(kind="source_categories", status="pending")
+    (row,) = pending.data.rows
+    assert row.details.source_category_code == "Coffee Shops"
+    assert row.details.transaction_count == 1
+    assert any("taxonomy_set" in action for action in pending.actions)
+
+    mapped = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(kind="category", state="present", category="Coffee"),
+            SourceCategoryStateRequest(
+                **_COFFEE_TERM, state="present", category="Coffee"
+            ),
+        ]
+    )
+    assert mapped.error is None
+    result = mapped.data.results[1]
+    assert (result.kind, result.changed, result.categorized) == (
+        "source_category",
+        True,
+        1,
+    )
+    assert (await reviews_coarse(kind="source_categories")).data.rows == []
+    (history,) = (
+        await reviews_coarse(kind="source_categories", status="history")
+    ).data.rows
+    assert (history.details.target_state, history.details.category) == (
+        "present",
+        "Coffee",
+    )
+
+    first = await taxonomy_set_coarse(
+        items=[SourceCategoryStateRequest(**_COFFEE_TERM, state="absent")]
+    )
+    assert first.error is not None
+    removed = await taxonomy_set_coarse(
+        items=[SourceCategoryStateRequest(**_COFFEE_TERM, state="absent")],
+        confirmation_token=first.error.details["confirmation_token"],
+    )
+    assert removed.error is None
+    assert removed.data.results[0].recategorized == 1
+    assert len((await reviews_coarse(kind="source_categories")).data.rows) == 1
+
+    undo = await system_audit_undo(removed.data.operation_id)
+    assert undo.error is None
+    assert (await reviews_coarse(kind="source_categories")).data.rows == []
+
+
+async def test_source_category_history_pages_more_than_one_curated_term() -> None:
+    """History orders by the term, so several curated terms read back together."""
+    from moneybin.database import get_database
+    from moneybin.mcp.tools.reviews import reviews_coarse
+
+    _import_coffee_term()
+    with get_database(read_only=False) as db:
+        db.execute(
+            "INSERT INTO prep.int_transactions__matched VALUES "
+            "('t2', 't2', 'csv', 'chase_credit', 'Groceries', NULL)"
+        )
+        db.execute(
+            "INSERT INTO core.fct_transactions (transaction_id, amount, "
+            "transaction_date) VALUES ('t2', -9.00, '2026-01-02')"
+        )
+    mapped = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(kind="category", state="present", category="Coffee"),
+            SourceCategoryStateRequest(
+                **_COFFEE_TERM, state="present", category="Coffee"
+            ),
+            SourceCategoryStateRequest(
+                kind="source_category",
+                state="ignored",
+                source_origin="chase_credit",
+                source_category_code="Groceries",
+            ),
+        ]
+    )
+    assert mapped.error is None
+
+    history = await reviews_coarse(kind="source_categories", status="history")
+
+    assert history.error is None
+    assert [row.details.source_category_code for row in history.data.rows] == [
+        "Coffee Shops",
+        "Groceries",
+    ]
+
+
+async def test_source_category_binding_names_the_resolved_destination() -> None:
+    """A by-name mapping binds the category id it resolved, not only the name."""
+    from moneybin.database import get_database
+    from moneybin.mcp.tools.taxonomy import (
+        _taxonomy_binding,  # pyright: ignore[reportPrivateUsage]
+        _to_taxonomy_target,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    _import_coffee_term()
+    request = SourceCategoryStateRequest(
+        **_COFFEE_TERM, state="present", category="Coffee"
+    )
+    with get_database(read_only=False) as db:
+        service = CategorizationService(db)
+        category_id = service.create_category("Coffee", actor="test")
+        plan = service.plan_taxonomy_targets([_to_taxonomy_target(request)])
+
+    assert category_id in _taxonomy_binding([request], plan).resolved_ids
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"state": "present"},
+        {"state": "present", "category_id": "c1", "category": "Coffee"},
+        {"state": "present", "subcategory": "Beans", "category_id": "c1"},
+        {"state": "ignored", "category_id": "c1"},
+        {"state": "absent", "category": "Coffee"},
+    ],
+)
+def test_source_category_request_rejects_a_misplaced_target(
+    fields: dict[str, Any],
+) -> None:
+    with pytest.raises(ValueError):
+        SourceCategoryStateRequest(**_COFFEE_TERM, **fields)
 
 
 async def test_taxonomy_merchant_absent_is_audited_and_undoable() -> None:
@@ -643,6 +805,7 @@ async def test_taxonomy_write_registrar_advertises_maximum_destructive_risk() ->
     assert {variant["properties"]["kind"]["const"] for variant in variants} == {
         "category",
         "merchant",
+        "source_category",
     }
 
 

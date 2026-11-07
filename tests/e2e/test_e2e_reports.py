@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from moneybin.database import Database
+from moneybin.services.transform_service import TransformService
 from tests.e2e.conftest import (
     TEST_ENCRYPTION_KEY,
     make_workflow_env,
@@ -171,6 +172,8 @@ def reports_env(e2e_home: Path) -> Iterator[dict[str, str]]:
             read_only=False,
         )
         try:
+            applied = TransformService(db).apply()
+            assert applied.applied, applied.error
             db.execute("CREATE SCHEMA IF NOT EXISTS reports")
             for ddl in _STUB_VIEWS:
                 db.execute(ddl)

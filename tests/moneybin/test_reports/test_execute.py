@@ -271,6 +271,20 @@ def test_set_home_currency_carries_no_hint(reports_db: Database) -> None:
     assert result.actions == ["reports.next"]
 
 
+def test_existing_home_currency_recovery_is_not_duplicated(
+    reports_db: Database,
+) -> None:
+    spec = _home_basis_spec()
+    execution = replace(
+        execute_catalog_report(spec, reports_db, max_rows=50),
+        actions=[HOME_CURRENCY_HINT],
+    )
+
+    result = redact_catalog_execution(spec, execution)
+
+    assert result.actions == [HOME_CURRENCY_HINT]
+
+
 def test_a_report_with_no_home_basis_column_carries_no_hint(
     reports_db: Database,
 ) -> None:

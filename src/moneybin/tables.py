@@ -107,9 +107,22 @@ TABULAR_FORMATS = TableRef("app", "tabular_formats")
 # -- App matching tables --
 MATCH_DECISIONS = TableRef("app", "match_decisions")
 INVESTMENT_MATCH_DECISIONS = TableRef("app", "investment_match_decisions")
+INVESTMENT_EVENT_MEMBERS = TableRef("app", "investment_event_members")
+INVESTMENT_MATCH_FIELD_RESOLUTIONS = TableRef(
+    "app", "investment_match_field_resolutions"
+)
+PLAID_INVESTMENT_REVISIONS = TableRef("prep", "stg_plaid__investment_revisions")
 INVESTMENT_EVENT_HEADERS = TableRef("prep", "int_investment_events__headers")
 INVESTMENT_EVENT_LEGS = TableRef("prep", "int_investment_events__legs")
 INVESTMENT_EVENT_EVIDENCE = TableRef("prep", "int_investment_events__evidence")
+INVESTMENT_SOURCE_PROJECTION = TableRef(
+    "prep", "int_investment_events__source_projection"
+)
+INVESTMENT_OPENING_PROJECTION = TableRef(
+    "prep", "int_investment_events__opening_projection"
+)
+ALIAS_INVESTMENT_EVENT_IDS = TableRef("core", "alias_investment_event_ids")
+ALIAS_INVESTMENT_TRANSACTION_IDS = TableRef("core", "alias_investment_transaction_ids")
 SEED_SOURCE_PRIORITY = TableRef("app", "seed_source_priority")
 
 # -- App account-identity tables (M1S) --
@@ -190,6 +203,7 @@ INT_ACCOUNTS_MERGED = TableRef("prep", "int_accounts__merged")
 STG_OFX_ACCOUNTS = TableRef("prep", "stg_ofx__accounts")
 STG_PLAID_ACCOUNTS = TableRef("prep", "stg_plaid__accounts")
 STG_PLAID_TRANSACTIONS = TableRef("prep", "stg_plaid__transactions")
+STG_SIMPLEFIN_TRANSACTIONS = TableRef("prep", "stg_simplefin__transactions")
 STG_SECURITY_PRICES = TableRef("prep", "stg_security_prices")
 STG_TABULAR_ACCOUNTS = TableRef("prep", "stg_tabular__accounts")
 

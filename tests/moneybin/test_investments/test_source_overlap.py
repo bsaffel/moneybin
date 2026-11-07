@@ -141,16 +141,23 @@ def test_overlap_uses_current_receipt_after_account_correction(
 
 
 def test_investment_source_types_match_the_ledger_branches() -> None:
-    """Every ledger union branch is a source type; a new one must be choosable."""
-    model = (
-        Path(__file__).parents[3]
-        / "src/moneybin/sqlmesh/models/core/fct_investment_transactions.sql"
-    ).read_text()
-    branches = set(re.findall(r"FROM\s+(prep\.\w+)", model))
-    assert branches == {
+    """Follow published membership back to every choosable source branch."""
+    models = Path(__file__).parents[3] / "src/moneybin/sqlmesh/models"
+
+    def branches(path: str) -> set[str]:
+        return set(re.findall(r"FROM\s+(prep\.\w+)", (models / path).read_text()))
+
+    assert branches("core/fct_investment_transactions.sql") == {
+        "prep.int_investment_events__source_projection",
+        "prep.int_investment_events__opening_projection",
+    }, "a new published ledger branch must preserve source-choice coverage"
+    assert branches("prep/int_investment_events__source_projection.sql") == {
+        "prep.int_investment_events__observations",
+        "prep.stg_plaid__investment_revisions",
+    }
+    assert branches("prep/int_investment_events__observations.sql") == {
         "prep.stg_manual__investment_transactions",
         "prep.stg_plaid__investment_transactions",
-        "prep.stg_plaid__opening_lots",
     }, "a new ledger branch means a new source type; update INVESTMENT_SOURCE_TYPES"
     assert frozenset({"manual", "plaid"}) == INVESTMENT_SOURCE_TYPES
 
@@ -506,12 +513,20 @@ def test_unreconciled_investment_accounts_counts_overlapping_accounts(
 ) -> None:
     from moneybin.investments.source_overlap import unreconciled_investment_accounts
     from moneybin.services.account_service import AccountService
+    from moneybin.services.investment_membership_service import (
+        InvestmentMembershipService,
+    )
     from tests.moneybin.test_investments._overlap_seed import ACCOUNT, seed_overlap
 
     seed_overlap(db)
     assert unreconciled_investment_accounts(db) == 1
 
     AccountService(db).settings_update(
-        ACCOUNT, actor="test", investment_source_type="manual"
+        ACCOUNT,
+        actor="test",
+        investment_source_type="manual",
+        verify_source_choice=InvestmentMembershipService(db)
+        .preview_source_choice(ACCOUNT, "manual")
+        .verify,
     )
     assert unreconciled_investment_accounts(db) == 0

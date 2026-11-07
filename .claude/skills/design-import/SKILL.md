@@ -151,8 +151,9 @@ ships. Use `browser_evaluate` to check what actually matters:
   the bundle).
 - Commit with explicit `git add <paths>`; never `-A`. A fresh worktree needs
   `uv sync` before the ruff pre-commit hook will run.
-- A design-system-only change takes **no CHANGELOG entry** (precedent: the Wordmark
-  and Icon component PRs) — it's a design asset, not a user-facing capability.
+- A design-system-only change needs no changelog fragment — it's a design asset,
+  not a user-facing capability — so apply the `skip-changelog` label and state that
+  reason in the PR description (`changelog.d/README.md`).
 
 ## Common mistakes
 

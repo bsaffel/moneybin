@@ -939,173 +939,197 @@ class AccountLinksService:
         if not in_outer_txn:
             self._db.begin()
         try:
-            decision = self._fetch_decision(decision_id)
-            if decision is None:
-                raise UserError(
-                    f"No account-link decision found for id {decision_id!r}.",
-                    code=error_codes.MUTATION_NOT_FOUND,
-                )
-            if decision["status"] != "pending":
-                raise UserError(
-                    f"Decision {decision_id!r} is {decision['status']!r}, not pending.",
-                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
-                )
+            from moneybin.investments.dependency_publication import (
+                dependency_publication,
+                record_equivalence,
+            )
 
-            provisional_id = decision["provisional_account_id"]
-
-            if target_account_id is not None:
-                # Accept path: validate confirming arg then repoint + accept + auto-reject.
-                if target_account_id != decision["candidate_account_id"]:
+            with dependency_publication(self._db):
+                decision = self._fetch_decision(decision_id)
+                if decision is None:
                     raise UserError(
-                        "target_account_id does not match the candidate named in "
-                        f"decision {decision_id!r}; pass the decision's own "
-                        "candidate_account_id as a confirming safety check.",
-                        code=error_codes.MUTATION_INVALID_INPUT,
+                        f"No account-link decision found for id {decision_id!r}.",
+                        code=error_codes.MUTATION_NOT_FOUND,
                     )
-                # Re-point ALL accepted links for the provisional onto the
-                # candidate — not only source_native (the staging-JOIN key) but
-                # also strong refs (persistent_token / full_number, used for
-                # adoption lookups). Leaving a strong ref on the merged-away
-                # provisional would later mis-adopt a source carrying the same
-                # token/number onto the dead id instead of the candidate.
-                from moneybin.investments.identity_preflight import (
-                    plan_account_lot_selections,
-                )
-                from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
-
-                selection_plan = plan_account_lot_selections(
-                    self._db,
-                    provisional_id,
-                    target_account_id,
-                )
-                links = self._db.execute(
-                    f"""
-                    SELECT link_id, ref_kind FROM {ACCOUNT_LINKS.full_name}
-                    WHERE account_id = ? AND status = 'accepted'
-                    """,  # TableRef constant + parameterized values
-                    [provisional_id],
-                ).fetchall()
-                if not any(ref_kind == "source_native" for _, ref_kind in links):
-                    # No source_native mapping to re-point means the merge can't
-                    # take effect: the staging JOIN translates raw rows via
-                    # source_native links, so accepting here would record a
-                    # "paper merge" that never collapses the data. Refuse (rolls
-                    # back) rather than silently mark the decision accepted.
+                if decision["status"] != "pending":
                     raise UserError(
-                        f"Cannot apply merge for decision {decision_id!r}: the "
-                        "provisional account has no source_native mapping to "
-                        "re-point onto the candidate.",
+                        f"Decision {decision_id!r} is {decision['status']!r}, not pending.",
                         code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
                     )
-                if verify_accept is not None:
-                    verify_accept(
-                        self.accept_impact(
-                            decision_id,
-                            target_account_id=target_account_id,
+
+                provisional_id = decision["provisional_account_id"]
+
+                if target_account_id is not None:
+                    # Accept path: validate confirming arg then repoint + accept + auto-reject.
+                    if target_account_id != decision["candidate_account_id"]:
+                        raise UserError(
+                            "target_account_id does not match the candidate named in "
+                            f"decision {decision_id!r}; pass the decision's own "
+                            "candidate_account_id as a confirming safety check.",
+                            code=error_codes.MUTATION_INVALID_INPUT,
                         )
+                    # Re-point ALL accepted links for the provisional onto the
+                    # candidate — not only source_native (the staging-JOIN key) but
+                    # also strong refs (persistent_token / full_number, used for
+                    # adoption lookups). Leaving a strong ref on the merged-away
+                    # provisional would later mis-adopt a source carrying the same
+                    # token/number onto the dead id instead of the candidate.
+                    from moneybin.investments.identity_preflight import (
+                        plan_account_lot_selections,
                     )
-                for link_id, _ref_kind in links:
-                    self._links.repoint(
-                        link_id=link_id,
-                        new_account_id=target_account_id,
-                        decided_by=decided_by,
+                    from moneybin.repositories.lot_selections_repo import (
+                        LotSelectionsRepo,
+                    )
+
+                    selection_plan = plan_account_lot_selections(
+                        self._db,
+                        provisional_id,
+                        target_account_id,
+                    )
+                    links = self._db.execute(
+                        f"""
+                        SELECT link_id, ref_kind FROM {ACCOUNT_LINKS.full_name}
+                        WHERE account_id = ? AND status = 'accepted'
+                        """,  # TableRef constant + parameterized values
+                        [provisional_id],
+                    ).fetchall()
+                    if not any(ref_kind == "source_native" for _, ref_kind in links):
+                        # No source_native mapping to re-point means the merge can't
+                        # take effect: the staging JOIN translates raw rows via
+                        # source_native links, so accepting here would record a
+                        # "paper merge" that never collapses the data. Refuse (rolls
+                        # back) rather than silently mark the decision accepted.
+                        raise UserError(
+                            f"Cannot apply merge for decision {decision_id!r}: the "
+                            "provisional account has no source_native mapping to "
+                            "re-point onto the candidate.",
+                            code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                        )
+                    if verify_accept is not None:
+                        verify_accept(
+                            self.accept_impact(
+                                decision_id,
+                                target_account_id=target_account_id,
+                            )
+                        )
+                    record_equivalence(
+                        self._db,
+                        kind="account",
+                        previous=provisional_id,
+                        proposed=target_account_id,
+                    )
+                    for link_id, _ref_kind in links:
+                        self._links.repoint(
+                            link_id=link_id,
+                            new_account_id=target_account_id,
+                            decided_by=decided_by,
+                            actor=self._actor,
+                            in_outer_txn=True,
+                        )
+                    from moneybin.repositories.investment_event_members_repo import (
+                        InvestmentEventMembersRepo,
+                    )
+
+                    # Membership publication owns curation after every route is represented.
+                    legacy_plan = (
+                        {}
+                        if InvestmentEventMembersRepo(self._db).has_history()
+                        else selection_plan
+                    )
+                    for disposal_id, selections in legacy_plan.items():
+                        LotSelectionsRepo(self._db).set_for_disposal(
+                            investment_transaction_id=disposal_id,
+                            selections=selections,
+                            actor=self._actor,
+                            in_outer_txn=True,
+                        )
+                    self._reconcile_settings(provisional_id, target_account_id)
+                    # Carry existing match decisions onto the survivor in the same
+                    # transaction. They store the account_id they were made under,
+                    # and both the rejected-pair key and the active-edge NodeKey are
+                    # built from it — so a decision left on the merged-away account
+                    # stops describing any live pair. The rejection in particular
+                    # stops matching itself, and the re-match below can then
+                    # auto-accept a pair the user explicitly rejected. Ordering is
+                    # load-bearing: this must precede the commit that rematch_after_merge
+                    # reads.
+                    repointed = MatchDecisionsRepo(self._db).repoint_account(
+                        from_account_id=provisional_id,
+                        to_account_id=target_account_id,
                         actor=self._actor,
                         in_outer_txn=True,
                     )
-                for disposal_id, selections in selection_plan.items():
-                    LotSelectionsRepo(self._db).set_for_disposal(
-                        investment_transaction_id=disposal_id,
-                        selections=selections,
-                        actor=self._actor,
-                        in_outer_txn=True,
-                    )
-                self._reconcile_settings(provisional_id, target_account_id)
-                # Carry existing match decisions onto the survivor in the same
-                # transaction. They store the account_id they were made under,
-                # and both the rejected-pair key and the active-edge NodeKey are
-                # built from it — so a decision left on the merged-away account
-                # stops describing any live pair. The rejection in particular
-                # stops matching itself, and the re-match below can then
-                # auto-accept a pair the user explicitly rejected. Ordering is
-                # load-bearing: this must precede the commit that rematch_after_merge
-                # reads.
-                repointed = MatchDecisionsRepo(self._db).repoint_account(
-                    from_account_id=provisional_id,
-                    to_account_id=target_account_id,
-                    actor=self._actor,
-                    in_outer_txn=True,
-                )
-                # A transfer whose two accounts just became one is retired in
-                # there. That is a decision of the user's being undone, so it
-                # is owed the same disclosure as the dedup retirement below —
-                # dropping the count would report "0 transfers retired" over
-                # an accepted transfer this call had just reversed. Held local
-                # until the writes below have all survived; see the fold-in.
-                collapsed = repointed.accepted_transfers_retired
-                # Accept the named decision.
-                accepted_names = self._frozen_names([
-                    (decision_id, provisional_id, target_account_id)
-                ])[decision_id]
-                self._decisions.update_status(
-                    decision_id,
-                    status="accepted",
-                    decided_by=decided_by,
-                    actor=self._actor,
-                    provisional_display_name=accepted_names[0],
-                    candidate_display_name=accepted_names[1],
-                    in_outer_txn=True,
-                )
-                # Auto-reject every other pending decision that touches the
-                # provisional — both where it is the provisional (other
-                # candidates for it) AND where it is the *candidate* (some other
-                # Q→P proposal). The provisional is merged away, so a later
-                # accept of Q→P would re-point Q onto a dead account; a fresh
-                # run() re-proposes Q→C if Q really is the same account.
-                sibling_rows = self._db.execute(
-                    f"""
-                    SELECT decision_id, provisional_account_id, candidate_account_id
-                    FROM {ACCOUNT_LINK_DECISIONS.full_name}
-                    WHERE (provisional_account_id = ? OR candidate_account_id = ?)
-                      AND decision_id != ?
-                      AND status = 'pending'
-                      AND reversed_at IS NULL
-                    """,  # TableRef constant + parameterized values
-                    [provisional_id, provisional_id, decision_id],
-                ).fetchall()
-                sibling_names = self._frozen_names(sibling_rows)
-                for sid, _, _ in sibling_rows:
+                    # A transfer whose two accounts just became one is retired in
+                    # there. That is a decision of the user's being undone, so it
+                    # is owed the same disclosure as the dedup retirement below —
+                    # dropping the count would report "0 transfers retired" over
+                    # an accepted transfer this call had just reversed. Held local
+                    # until the writes below have all survived; see the fold-in.
+                    collapsed = repointed.accepted_transfers_retired
+                    # Accept the named decision.
+                    accepted_names = self._frozen_names([
+                        (decision_id, provisional_id, target_account_id)
+                    ])[decision_id]
                     self._decisions.update_status(
-                        sid,
-                        status="rejected",
+                        decision_id,
+                        status="accepted",
                         decided_by=decided_by,
                         actor=self._actor,
-                        provisional_display_name=sibling_names[sid][0],
-                        candidate_display_name=sibling_names[sid][1],
+                        provisional_display_name=accepted_names[0],
+                        candidate_display_name=accepted_names[1],
                         in_outer_txn=True,
                     )
-            else:
-                # Standalone path: reject every pending decision for this provisional.
-                pending_rows = self._db.execute(
-                    f"""
-                    SELECT decision_id, provisional_account_id, candidate_account_id
-                    FROM {ACCOUNT_LINK_DECISIONS.full_name}
-                    WHERE provisional_account_id = ?
-                      AND status = 'pending'
-                      AND reversed_at IS NULL
-                    """,  # TableRef constant + parameterized values
-                    [provisional_id],
-                ).fetchall()
-                rejected_names = self._frozen_names(pending_rows)
-                for did, _, _ in pending_rows:
-                    self._decisions.update_status(
-                        did,
-                        status="rejected",
-                        decided_by=decided_by,
-                        actor=self._actor,
-                        provisional_display_name=rejected_names[did][0],
-                        candidate_display_name=rejected_names[did][1],
-                        in_outer_txn=True,
-                    )
+                    # Auto-reject every other pending decision that touches the
+                    # provisional — both where it is the provisional (other
+                    # candidates for it) AND where it is the *candidate* (some other
+                    # Q→P proposal). The provisional is merged away, so a later
+                    # accept of Q→P would re-point Q onto a dead account; a fresh
+                    # run() re-proposes Q→C if Q really is the same account.
+                    sibling_rows = self._db.execute(
+                        f"""
+                        SELECT decision_id, provisional_account_id, candidate_account_id
+                        FROM {ACCOUNT_LINK_DECISIONS.full_name}
+                        WHERE (provisional_account_id = ? OR candidate_account_id = ?)
+                          AND decision_id != ?
+                          AND status = 'pending'
+                          AND reversed_at IS NULL
+                        """,  # TableRef constant + parameterized values
+                        [provisional_id, provisional_id, decision_id],
+                    ).fetchall()
+                    sibling_names = self._frozen_names(sibling_rows)
+                    for sid, _, _ in sibling_rows:
+                        self._decisions.update_status(
+                            sid,
+                            status="rejected",
+                            decided_by=decided_by,
+                            actor=self._actor,
+                            provisional_display_name=sibling_names[sid][0],
+                            candidate_display_name=sibling_names[sid][1],
+                            in_outer_txn=True,
+                        )
+                else:
+                    # Standalone path: reject every pending decision for this provisional.
+                    pending_rows = self._db.execute(
+                        f"""
+                        SELECT decision_id, provisional_account_id, candidate_account_id
+                        FROM {ACCOUNT_LINK_DECISIONS.full_name}
+                        WHERE provisional_account_id = ?
+                          AND status = 'pending'
+                          AND reversed_at IS NULL
+                        """,  # TableRef constant + parameterized values
+                        [provisional_id],
+                    ).fetchall()
+                    rejected_names = self._frozen_names(pending_rows)
+                    for did, _, _ in pending_rows:
+                        self._decisions.update_status(
+                            did,
+                            status="rejected",
+                            decided_by=decided_by,
+                            actor=self._actor,
+                            provisional_display_name=rejected_names[did][0],
+                            candidate_display_name=rejected_names[did][1],
+                            in_outer_txn=True,
+                        )
 
             if not in_outer_txn:
                 self._db.commit()

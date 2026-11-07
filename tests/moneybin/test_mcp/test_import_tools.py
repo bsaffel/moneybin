@@ -1866,13 +1866,18 @@ async def test_import_preview_pdf_bridge_keeps_recipe_inputs_usable(
     pdf.write_bytes(b"%PDF bridge fixture")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     service = MagicMock()
-    service.pdf_preview.side_effect = _bridge_error()
+    service.pdf_preview.side_effect = _consent_gated_bridge(pdf)
 
     with patch(
         "moneybin.services.import_service.ImportService",
         return_value=service,
     ):
-        response = await import_preview_coarse(file_path=str(pdf))
+        first = await import_preview_coarse(file_path=str(pdf))
+        assert first.data.kind == "pdf_ai_assistance"
+        token = first.data.consent_request["confirmation_token"]
+        response = await import_preview_coarse(
+            file_path=str(pdf), confirmation_token=token
+        )
 
     from moneybin.privacy.payloads.imports import ImportPdfBridgePreviewPayload
 
@@ -4554,8 +4559,10 @@ def test_bridge_confirm_action_names_the_preview_id_workflow() -> None:
 
     assert "import_confirm(preview_id=..., bridge_response=" in hint
     assert "file_path=" not in hint
-    # The transparency notice must survive — it is why the agent may read the doc.
-    assert "transparency_notice" in hint
+    # Consent replaced the transparency notice; the hint states the redaction scope.
+    assert "transparency_notice" not in hint
+    assert "consented" in hint
+    assert "routing numbers and SSNs MoneyBin identified" in hint
 
 
 # ---------------------------------------------------------------------------
@@ -5367,7 +5374,6 @@ def _bridge_error(reason: str = "unknown_layout") -> ImportConfirmationRequiredE
     """A confirmation error whose proposal is a PDF BridgePayload."""
     payload = BridgePayload(
         payload={
-            "transparency_notice": "Proceeding surfaces this PDF to the agent.",
             "source_file": "chase.pdf",
             "document_text": (
                 "Chase Bank\nDate Description Amount\n05/01 COFFEE SHOP -12.34"
@@ -5391,6 +5397,30 @@ def _bridge_error(reason: str = "unknown_layout") -> ImportConfirmationRequiredE
         reason=reason,  # type: ignore[arg-type]
     )
     return ImportConfirmationRequiredError(outcome)
+
+
+def _consent_gated_bridge(pdf: Path) -> Any:
+    """pdf_preview stub: content-free without consent, the bridge payload with it."""
+    from moneybin.services.import_confirmation import AIAssistanceRequired
+
+    def _preview(*_args: object, **kwargs: object) -> None:
+        if kwargs.get("disclosure_consent") is not None:
+            raise _bridge_error()
+        raise ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="pdf",
+                confidence=_make_confidence(score=0.4, tier="low"),
+                proposed=AIAssistanceRequired(
+                    file_path=str(pdf),
+                    file_sha256="0" * 64,
+                    decision_reason="low_confidence",
+                    request_kind="propose_recipe",
+                ),
+                reason="ai_assistance_required",
+            )
+        )
+
+    return _preview
 
 
 def _sign_error() -> ImportConfirmationRequiredError:
@@ -5451,7 +5481,7 @@ class TestImportFilesPdfBridge:
         bridge = payload.get("bridge_payload")
         assert isinstance(bridge, dict)
         assert bridge.get("request_kind") == "propose_recipe"
-        assert "transparency_notice" in bridge
+        assert "transparency_notice" not in bridge
         assert bridge.get("document_text") == (
             "Chase Bank\nDate Description Amount\n05/01 COFFEE SHOP -12.34"
         )
@@ -5639,9 +5669,37 @@ class TestImportPreviewPdf:
         assert data["row_count"] == 12
         assert result.summary.sensitivity == "medium"
 
-    async def test_pdf_bridge_escalation_returns_payload(
+    async def test_pdf_bridge_escalation_is_content_free(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
+        """The legacy entry cannot obtain consent, so it never carries content."""
+        pdf = tmp_path / "statements" / "chase.pdf"
+        pdf.parent.mkdir(parents=True)
+        pdf.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        mock_service = MagicMock()
+        mock_service.pdf_preview.side_effect = _consent_gated_bridge(pdf)
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = import_preview(file_path=str(pdf))
+
+        data = result.data
+        assert isinstance(data, dict)
+        assert data["status"] == "ai_assistance_required"
+        assert data["channel"] == "pdf"
+        assert "bridge_payload" not in data
+        assert "COFFEE" not in result.to_json()
+
+    async def test_pdf_bridge_without_consent_fails_closed(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """A BridgePayload raised without consent is never forwarded."""
         pdf = tmp_path / "statements" / "chase.pdf"
         pdf.parent.mkdir(parents=True)
         pdf.touch()
@@ -5656,13 +5714,8 @@ class TestImportPreviewPdf:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = import_preview(file_path=str(pdf))
-
-        data = result.data
-        assert isinstance(data, dict)
-        assert data["status"] == "confirmation_required"
-        assert data["channel"] == "pdf"
-        assert data["bridge_payload"]["request_kind"] == "propose_recipe"
+            with pytest.raises(RuntimeError):
+                import_preview(file_path=str(pdf))
 
     async def test_pdf_sign_confirmation_returns_proposal(
         self, tmp_path: Path, monkeypatch: MonkeyPatch

@@ -24,6 +24,9 @@ class ConsentGrantRow:
     backend: Annotated[str, DataClass.INSTITUTION]
     consent_mode: Annotated[str, DataClass.TXN_TYPE]
     granted_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    recipient_kind: Annotated[str, DataClass.TXN_TYPE] = "ai_backend"
+    approved_via: Annotated[str | None, DataClass.TXN_TYPE] = None
+    terms_version: Annotated[str | None, DataClass.TXN_TYPE] = None
 
 
 @row_set("active_grants")

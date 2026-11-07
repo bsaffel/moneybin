@@ -145,6 +145,9 @@ def privacy_status() -> ResponseEnvelope[PrivacyStatusPayload]:
                     backend=g.backend,
                     consent_mode=g.consent_mode.value,
                     granted_at=format_utc(g.granted_at),
+                    recipient_kind=g.recipient_kind,
+                    approved_via=g.approved_via,
+                    terms_version=g.terms_version,
                 )
                 for g in status.active_grants
             ],
@@ -266,6 +269,9 @@ def privacy_coarse(
                     backend=grant.backend,
                     consent_mode=grant.consent_mode.value,
                     granted_at=format_utc(grant.granted_at),
+                    recipient_kind=grant.recipient_kind,
+                    approved_via=grant.approved_via,
+                    terms_version=grant.terms_version,
                 )
                 for grant in status.active_grants
             ],

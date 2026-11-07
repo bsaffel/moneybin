@@ -35,6 +35,7 @@ from moneybin.orchestration.refresh import (
     _run_identity_step,  # pyright: ignore[reportPrivateUsage]
     _run_rates_step,  # pyright: ignore[reportPrivateUsage]
     refresh,
+    step_outcome,
 )
 from moneybin.services import matching_service
 from moneybin.services.merchant_resolver import HarvestResult
@@ -48,7 +49,11 @@ from moneybin.tables import EXCHANGE_RATE_COVERAGE, EXCHANGE_RATES, TableRef
 
 
 def _make_apply_result(applied: bool = True) -> ApplyResult:
-    return ApplyResult(applied=applied, duration_seconds=1.0, error=None)
+    return ApplyResult(
+        applied=applied,
+        duration_seconds=1.0,
+        investment_match=StageOutcome(step="investment_match", ran=True),
+    )
 
 
 def _match_double(**overrides: Any) -> MagicMock:
@@ -77,6 +82,7 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
     gsheet_pull = MagicMock(return_value=[])
     matcher_run = MagicMock(return_value=_match_double())
     transform_apply = MagicMock(return_value=_make_apply_result(applied=True))
+    transform_sqlmesh = MagicMock(return_value=_make_apply_result(applied=True))
     categorize_pending = MagicMock(
         return_value={
             "total": 0,
@@ -106,7 +112,13 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
         ),
         patch(
             "moneybin.orchestration.refresh.TransformService",
-            return_value=MagicMock(apply=transform_apply),
+            return_value=MagicMock(
+                apply=transform_apply,
+                _apply_sqlmesh=transform_sqlmesh,
+                prepare_investments=MagicMock(
+                    return_value=StageOutcome(step="investment_match", ran=True)
+                ),
+            ),
         ),
         patch(
             "moneybin.services.categorization.CategorizationService",
@@ -126,6 +138,7 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
             "gsheet_pull": gsheet_pull,
             "matcher_run": matcher_run,
             "transform_apply": transform_apply,
+            "transform_sqlmesh": transform_sqlmesh,
             "categorize_pending": categorize_pending,
             "auto_stats": auto_stats,
             "identity": identity,
@@ -156,11 +169,12 @@ def patch_all_refresh_stages(monkeypatch: pytest.MonkeyPatch, calls: list[str]) 
     def _transform(_db: Database) -> Any:
         service = MagicMock()
 
-        def _apply() -> ApplyResult:
+        def _apply(*, actor: str = "system") -> ApplyResult:
             calls.append("transform")
             return _make_apply_result()
 
         service.apply.side_effect = _apply
+        service._apply_sqlmesh.side_effect = _apply
         return service
 
     def _categorize(_db: Database) -> StageOutcome:
@@ -500,10 +514,10 @@ def test_refresh_surfaces_failure_while_consuming_written_rates(
     calls: list[str] = []
     patch_all_refresh_stages(monkeypatch, calls)
     transform = MagicMock()
-    transform.apply.side_effect = [
-        _make_apply_result(),
-        ApplyResult(applied=False, duration_seconds=2.0, error="SecondPassError"),
-    ]
+    transform.apply.return_value = _make_apply_result()
+    transform._apply_sqlmesh.return_value = ApplyResult(
+        applied=False, duration_seconds=2.0, error="SecondPassError"
+    )
     monkeypatch.setattr(
         "moneybin.orchestration.refresh.TransformService",
         MagicMock(return_value=transform),
@@ -1572,36 +1586,31 @@ def test_refresh_omits_a_stage_the_caller_never_asked_for(
 
 
 def test_refresh_surfaces_a_blocking_investment_match_failure(
-    monkeypatch: pytest.MonkeyPatch, patched_services: dict[str, MagicMock]
+    patched_services: dict[str, MagicMock],
 ) -> None:
-    """A blocking investment_match crash must not read as a clean skip.
-
-    Regression for the PR #608 review finding: the early return this branch
-    takes reported ``applied=False`` but left the top-level ``error`` at
-    ``None``, so every embedded caller (``SyncService.pull``, batch import,
-    inbox sync) that reads only ``RefreshResult.error`` — see
-    ``test_pull_surfaces_refresh_error_on_failure`` for that passthrough —
-    could report success after raw data loaded even though apply never ran
-    and ``core.*`` stayed stale.
-    """
-
-    def _blocked_investment_match(_db: Database, *, actor: str) -> StageOutcome:
-        return StageOutcome(
-            step="investment_match", ran=True, error="injected planner failure"
-        )
-
-    monkeypatch.setattr(
-        "moneybin.orchestration.refresh._run_investment_match_step",
-        _blocked_investment_match,
+    """A planner crash blocks apply and stays on its own stage in every carrier."""
+    blocked = StageOutcome(
+        step="investment_match", ran=True, error="injected planner failure"
+    )
+    patched_services["transform_apply"].return_value = ApplyResult(
+        applied=False,
+        duration_seconds=0.0,
+        error=blocked.error,
+        investment_match=blocked,
     )
 
     result = refresh(db=MagicMock(spec=Database), steps=["transform"])
 
     assert result.applied is False
-    assert result.error == "injected planner failure"
-    # Apply never ran at all — not just that it reported no error.
+    assert result.error is None
+    assert result.duration_seconds is None
+    stage = result.stage("investment_match")
+    assert stage is not None and stage.error == "injected planner failure"
+    assert step_outcome(result).transform_blocked
+    # The service attempted prerequisites, but SQLMesh never ran.
     assert result.stage("transform") is None
-    patched_services["transform_apply"].assert_not_called()
+    patched_services["transform_apply"].assert_called_once_with(actor="system")
+    patched_services["transform_sqlmesh"].assert_not_called()
 
 
 def test_refresh_marks_a_requested_categorize_that_could_not_run(

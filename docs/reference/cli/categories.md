@@ -105,6 +105,7 @@ Usage: `moneybin categories mappings [OPTIONS] COMMAND [ARGS]...`
 |---|---|
 | [`moneybin categories mappings pending`](#moneybin-categories-mappings-pending) | List imported category-vocabulary terms with no curated mapping. |
 | [`moneybin categories mappings set`](#moneybin-categories-mappings-set) | Map one imported category-vocabulary term to a MoneyBin category, or ignore it. |
+| [`moneybin categories mappings remove`](#moneybin-categories-mappings-remove) | Remove one imported term's mapping or ignore, returning it to pending. |
 
 ## moneybin categories mappings pending
 
@@ -172,4 +173,31 @@ Usage: `moneybin categories mappings set [OPTIONS]`
 | `--into` | text |  | Map the term to this existing category_id |
 | `--new` | text |  | Create a new category with this name, then map the term to it |
 | `--ignore` | flag |  | Ignore the term: it leaves the pending list and categorizes nothing |
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+
+## moneybin categories mappings remove
+
+Remove one imported term's mapping or ignore, returning it to pending.
+
+Identify the term as `categories mappings set` does. The categories the
+mapping assigned are withdrawn and re-evaluated at once; categories you
+set by hand, by rule, or by merchant are never touched. A term with no
+mapping is refused.
+
+Example:
+
+```console
+moneybin categories mappings remove --namespace mint --category Uncategorized
+```
+
+Usage: `moneybin categories mappings remove [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--namespace` | text |  | Required. Term's source_origin (e.g. an exporter slug) |
+| `--source-type` | text |  | Term's source type (csv, excel, ...); derived when only one carries it |
+| `--category` | text |  | Required. Term's imported category text |
+| `--subcategory` | text |  | Term's imported subcategory text, if any |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |

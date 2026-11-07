@@ -37,7 +37,7 @@ mcp = FastMCP(
 
         Money amounts are JSON numbers. summary.display_currency names the currency of the rows in that response when they all share one; it is null when they span more than one currency or the currency is unknown, and each row's own currency_code is then the authority. It describes the returned rows only — when summary.has_more is true, later pages may carry other currencies. Never add amounts whose currency_code differs; pass display_currency to reports() to price its rows into one currency instead, which defaults to the currency the user treats as home. Refresh gathers stored provider pairs for the home currency and any display targets declared through profile_set(display_currency_targets=["EUR"]), so a read target has offline evidence without changing accounting. Each priced row also carries original_currency_code, naming which entry in summary.applied_rates converted it, and it is present on every priced row. summary.home_currency names the home currency actually priced into a home-basis column on that response — the net-worth reports carry such columns, like net_worth_home — and is absent when no conversion put a value in one, so read it as the second unit on a response that carries two. A report whose rows lack a single currency and a single date to price from cannot be priced, and says why in summary.degraded_reason. The accounting convention is negative = expense, positive = income; transfers are exempt.
 
-        Privacy tiers are low, medium, high, and critical and are logged per call. Critical account and routing fields remain masked; all other declared fields — including amounts, descriptions, and dates — reach the model provider as-is. The raw and prep schemas that sql_query also reads are largely undeclared; masking there falls back to a value-shape scan, and sql_query's own description states what that scan does and does not catch. The consent ledger exists, but global consent enforcement and automatic degraded responses are deferred.
+        Privacy tiers are low, medium, high, and critical and are logged per call. Critical account and routing fields remain masked; all other declared fields — including amounts, descriptions, and dates — reach the model provider as-is. The raw and prep schemas that sql_query also reads are largely undeclared; masking there falls back to a value-shape scan, and sql_query's own description states what that scan does and does not catch. Consent is enforced for one flow today: PDF statement content reaches you only after the person consents (see import_preview and import_files). The consent ledger records other categories, but global consent enforcement and automatic degraded responses are deferred.
 
         Destructive branches require explicit payload-bound confirmation. Inspect mutations with system_audit and recover supported app.* changes with system_audit_undo(operation_id).
         """
@@ -187,7 +187,7 @@ def _check_and_heal_schema() -> None:
     if not drift:
         return
 
-    from moneybin.services.transform_service import TransformService
+    from moneybin.orchestration.refresh import refresh
 
     logger.info(
         f"Stale snapshots detected for {sorted(drift)}; running transform apply "
@@ -201,19 +201,14 @@ def _check_and_heal_schema() -> None:
     # `always_include_local_changes` docstring), so it would no-op against
     # the very drift we need to fix.
     with get_database(read_only=False, operation_type="transform_apply") as db:
-        result = TransformService(db).apply()
+        result = refresh(db, steps=["transform"], actor="mcp:schema_self_heal")
     if not result.applied:
-        # apply() soft-fails by returning applied=False with the SQLMesh
-        # error type name (apply() itself drops the full message for PII
-        # reasons). Raise SchemaDriftError so classify_user_error maps it
-        # to the standard "run moneybin transform apply" hint — the user's
-        # recovery path is to re-run apply manually and see the real
-        # SQLMesh error in the terminal.
-        raise SchemaDriftError(
-            f"Auto-heal failed: TransformService.apply() reported "
-            f"error={result.error} after {result.duration_seconds:.2f}s"
+        failure = result.error or next(
+            (f"{stage.step}: {stage.error}" for stage in result.stages if stage.error),
+            "transform did not run",
         )
-    logger.info(f"Self-heal completed in {result.duration_seconds:.2f}s")
+        raise SchemaDriftError(f"Auto-heal failed: {failure}")
+    logger.info("Schema self-heal completed")
 
     with get_database(read_only=True) as db:
         post_heal_drift = check_core_schema_drift(db)

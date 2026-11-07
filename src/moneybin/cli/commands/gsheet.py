@@ -347,6 +347,8 @@ def gsheet_pull(
 ) -> None:
     """Pull a single connection by ID, or every healthy connection."""
     from moneybin.adapters.refresh_adapters import (
+        refresh_investment_hints,
+        refresh_step_actions,
         refresh_steps_fields,
     )
     from moneybin.connectors.gsheet.pull_service import PullResult
@@ -506,7 +508,12 @@ def gsheet_pull(
                     refresh_error=refresh_error,
                     transfers_retired=transfers_retired,
                     **refresh_steps_fields(steps_outcome),
+                ),
+                actions=refresh_investment_hints(steps_outcome),
+                recovery_actions=refresh_step_actions(
+                    steps_outcome, apply_failed=refresh_error is not None
                 )
+                or None,
             ),
             output,
             cli_actor="gsheet_pull",

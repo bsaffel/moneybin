@@ -261,6 +261,60 @@ def _link_account(
     )
 
 
+def _publish_investment_fixture(db: Database) -> None:
+    """Seed required canonical entities and use the production refresh for Core."""
+    from moneybin.config import set_current_profile
+    from moneybin.repositories.securities_repo import SecuritiesRepo
+    from moneybin.services.transform_service import TransformService
+
+    # Module fixtures run before the function-scoped profile reset.
+    set_current_profile("test")
+
+    native_accounts = db.execute("""SELECT account_id, source_origin FROM raw.plaid_investment_transactions
+        UNION SELECT account_id, source_origin FROM raw.plaid_investment_holdings
+        UNION SELECT DISTINCT account_id, 'fixture_metadata' FROM raw.manual_investment_transactions""").fetchall()
+    for native, origin in native_accounts:
+        if not db.execute(
+            """SELECT 1 FROM app.account_links WHERE status = 'accepted'
+            AND source_type = 'plaid' AND ref_kind = 'source_native'
+            AND ref_value = ? AND source_origin = ?""",
+            [native, origin],
+        ).fetchone():
+            _link_account(db, native, native, origin)
+        if not db.execute(
+            "SELECT 1 FROM raw.plaid_accounts WHERE account_id = ? AND source_origin = ?",
+            [native, origin],
+        ).fetchone():
+            _insert(
+                db,
+                "raw.plaid_accounts",
+                {
+                    "account_id": native,
+                    "source_origin": origin,
+                    "account_type": "investment",
+                    "account_subtype": "brokerage",
+                    "name": "Synthetic Investment Account",
+                    "institution_name": "Synthetic Broker",
+                    "source_file": "fixture_accounts",
+                    "extracted_at": "2026-07-08T12:00:00Z",
+                },
+            )
+    canonical_securities = db.execute("""SELECT DISTINCT security_id FROM app.security_links WHERE status = 'accepted'
+        UNION SELECT DISTINCT security_id FROM raw.manual_investment_transactions WHERE security_id IS NOT NULL""").fetchall()
+    for (security_id,) in canonical_securities:
+        if not db.execute(
+            "SELECT 1 FROM app.securities WHERE security_id = ?", [security_id]
+        ).fetchone():
+            SecuritiesRepo(db).upsert(
+                security_id=security_id,
+                name="Synthetic Security",
+                security_type="equity",
+                actor="test",
+            )
+    result = TransformService(db).apply()
+    assert result.applied, result.error
+
+
 def _module_database(
     tmp_path_factory: pytest.TempPathFactory,
     request: pytest.FixtureRequest,
@@ -1589,6 +1643,17 @@ def bootstrap_cases_template(
         quantity="2",
         cost_basis="300.03",
     )
+    _raw_holding(
+        db, security_id="mb305_below_tie", quantity="0.4999999999", cost_basis="0.01"
+    )
+    _raw_lot(
+        db,
+        "mb305_below_tie",
+        0,
+        original_purchase_datetime="2021-01-01 00:00:00",
+        quantity="1",
+        cost_basis="0.01",
+    )
     for security_id in ("mb21_id_x", "mb21_id_y"):
         _raw_holding(db, security_id=security_id, quantity="100", cost_basis="1000.00")
         _raw_lot(
@@ -1712,8 +1777,7 @@ def bootstrap_cases_template(
         cost_basis="1.00",
     )
     _link_security(db, "mb21_absent_security", "cat0000000d3")
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    _publish_investment_fixture(db)
     db.close()
     return db.path
 
@@ -1925,8 +1989,7 @@ def test_bootstrap_ids_stable_across_rebuild_and_later_snapshots(
         source_file="mb21_bootstrap_later",
         extracted_at="2026-08-01 12:00:00",
     )
-    with sqlmesh_context(bootstrap_rebuild_case) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    _publish_investment_fixture(bootstrap_rebuild_case)
     after = _opening(bootstrap_rebuild_case, "sec_a")
     assert len(after) == 1
     assert before == after
@@ -1964,9 +2027,7 @@ def test_boundary_lot_prorates_basis_and_full_draws_stay_exact(
     The gap falls short of the eligible lots' total (an in-window ACATS transfer_in
     whose shares Plaid folds into a lot carrying its ORIGINAL, pre-window purchase
     date), so the boundary lot is only partially drawn and prorates its basis. The
-    fully-drawn lot must keep its basis to the cent — DuckDB has no decimal division,
-    so `basis * drawn / qty` detours through DOUBLE; only the boundary row may pay
-    that, never a full draw.
+    fully-drawn lot must keep its original basis to the cent.
     """
     rows = _opening(bootstrap_cases, "mb21_prorate")  # gap = 130 - 60 = 70
     assert len(rows) == 2  # 30 drawn in full, 40 of 100 drawn from the boundary lot
@@ -1978,23 +2039,45 @@ def test_boundary_lot_prorates_basis_and_full_draws_stay_exact(
 def test_boundary_lot_prorates_a_half_cent_tie_up(
     bootstrap_cases: Database,
 ) -> None:
-    """DECIMAL / DECIMAL in DuckDB returns DOUBLE.
-
-    A cast straight from that DOUBLE to DECIMAL(18,2) truncates a half-cent tie
-    instead of rounding it. 300.03 x 1/2 = 150.015 exactly; DECIMAL(18,2)'s HALF_UP convention rounds that
-    UP to 150.02. The prior boundary-lot test (sec_h, above) rounds identically
-    under a naive direct cast OR the DECIMAL(28,10) round-trip -- it asserts
-    precision without ever exercising a tie. This case does discriminate: a naive
-    ``(lot_basis * drawn_qty / lot_qty)::DECIMAL(18,2)`` cast emits -150.01 (the
-    DOUBLE holds 150.01499999999999...); the DECIMAL(28,10) round-trip emits the
-    correct -150.02. Verified by reverting the round-trip cast locally: this test
-    goes RED (-150.01 != -150.02) without it, GREEN with it restored.
-    """
+    """300.03 * 1/2 = 150.015 exactly; HALF_UP rounds the tie to 150.02."""
     rows = _opening(
         bootstrap_cases, "mb21_tie"
     )  # gap = 1 - 0 = 1; boundary draws 1 of 2
     assert len(rows) == 1
     assert rows[0][:3] == (Decimal("1"), Decimal("-150.02"), "2021-01-01")
+
+
+@pytest.mark.slow
+def test_boundary_lot_below_half_cent_rounds_once(bootstrap_cases: Database) -> None:
+    """0.01 * 0.4999999999 = 0.004999999999, strictly below half a cent."""
+    rows = _opening(bootstrap_cases, "mb305_below_tie")
+    assert len(rows) == 1
+    assert rows[0][1] == Decimal("0.00")
+
+
+@pytest.mark.slow
+def test_boundary_lot_proration_preserves_declared_decimal_range(
+    bootstrap_rebuild_case: Database,
+) -> None:
+    """Just below half of the maximum basis rounds down without product overflow."""
+    db = bootstrap_rebuild_case
+    _raw_holding(
+        db,
+        security_id="mb305_wide_proration",
+        quantity="499999999999999999.9999999999",
+        cost_basis="9999999999999999.99",
+    )
+    _raw_lot(
+        db,
+        "mb305_wide_proration",
+        0,
+        original_purchase_datetime="2021-01-01 00:00:00",
+        quantity="999999999999999999.9999999999",
+        cost_basis="9999999999999999.99",
+    )
+    rows = _opening(db, "mb305_wide_proration")
+    assert len(rows) == 1
+    assert rows[0][1] == Decimal("-4999999999999999.99")
 
 
 @pytest.mark.slow
@@ -2128,9 +2211,10 @@ def test_provider_columns_carried_and_manual_rows_null(core_ledger: Database) ->
     rows = {
         r[0]: (r[1], r[2], r[3], r[4])
         for r in core_ledger.execute(
-            "SELECT investment_transaction_id, provider_type, provider_subtype, "
-            "source_type, amount FROM core.fct_investment_transactions "
-            "WHERE investment_transaction_id IN "
+            "SELECT m.native_reference, t.provider_type, t.provider_subtype, "
+            "t.source_type, t.amount FROM core.fct_investment_transactions AS t "
+            "JOIN app.investment_event_members AS m USING (investment_transaction_id) "
+            "WHERE m.retired_at IS NULL AND m.member_kind = 'source_event' AND m.native_reference IN "
             "('mb21_provider_plaid', 'mb21_provider_manual')"
         ).fetchall()
     }
@@ -2360,6 +2444,7 @@ def core_ledger(
         source_file="mb21_provider",
         source_origin="mb21_provider",
     )
+    _link_security(db, "mb21_provider_security", "cat0000000b1")
     _manual_investment_txn(
         db,
         source_transaction_id="mb21_provider_manual",
@@ -2464,8 +2549,7 @@ def core_ledger(
             cost_basis=basis,
         )
         _link_security(db, security_id, "cat0000000d5")
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
+    _publish_investment_fixture(db)
     yield db
 
 
@@ -2475,7 +2559,9 @@ def test_core_excludes_review_routed_rows(core_ledger: Database) -> None:
     ids = {
         r[0]
         for r in core_ledger.execute(
-            "SELECT investment_transaction_id FROM core.fct_investment_transactions"
+            "SELECT m.native_reference FROM core.fct_investment_transactions AS t "
+            "JOIN app.investment_event_members AS m USING (investment_transaction_id) "
+            "WHERE m.retired_at IS NULL AND m.member_kind = 'source_event'"
         ).fetchall()
     }
     assert {"itx_buy", "itx_div", "itx_reinvest", "itx_tax", "itx_acats"} <= ids
@@ -2537,6 +2623,15 @@ def test_bootstrap_row_is_distinguishable_from_a_real_transfer_in(
     acats_subtype, acats_id = rows["cat000000002"]
     boot_subtype, boot_id = rows["cat000000003"]
     assert acats_subtype is None
-    assert acats_id == "itx_acats"
+    assert len(acats_id) == len(boot_id) == 12
+    assert core_ledger.execute(
+        """SELECT member_kind, native_reference
+        FROM app.investment_event_members WHERE investment_transaction_id = ? AND retired_at IS NULL""",
+        [acats_id],
+    ).fetchone() == ("source_event", "itx_acats")
     assert boot_subtype == "opening_bootstrap"
-    assert boot_id.startswith("plaid_opening_")
+    assert core_ledger.execute(
+        """SELECT member_kind FROM app.investment_event_members
+        WHERE investment_transaction_id = ? AND retired_at IS NULL""",
+        [boot_id],
+    ).fetchone() == ("opening_lot_reconstruction",)

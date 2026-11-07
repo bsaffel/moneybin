@@ -100,13 +100,9 @@ a stamp.
 
 ## Personas (read docs/audience.md as the canonical source)
 
-Voice and density depend on who's reading. The current personas:
-
-- **Power-user finance migrant** — coming from Tiller / Lunch Money / Beancount / hledger; comfortable with CLIs; wants the AI + database story.
-- **AI-native developer** — lives in Claude Code / Cursor / VS Code; wants MCP for every domain; reads code fluently.
-- **Self-hoster** — runs Vaultwarden / NextCloud / Photoprism; has a personal-finance todo; wants clean install + good defaults.
-- **Tracker** (post-launch) — wants polished visual dashboard for spending and net worth.
-- **FIRE / wealth-builder** (post-launch) — net worth + investments + cost basis.
+Voice and density depend on who's reading. The personas are the headings of
+`docs/audience.md` — "already a good fit" and "coming later" — and the tables
+below name them by those headings.
 
 For "not yet for you" cases, point honestly to alternatives (`docs/audience.md` has the table). Honest framing is part of the brand.
 
@@ -114,16 +110,16 @@ For "not yet for you" cases, point honestly to alternatives (`docs/audience.md` 
 
 | File | Primary persona | Tone | Length budget |
 |---|---|---|---|
-| `README.md` | Power-user migrant + AI-native dev | Storefront — what is it, why care, how to start | ~160–180 lines (measured 158–171 across 2026-05 → 2026-09; the earlier "220–260" figure was never measured) |
+| `README.md` | Tiller-migrant CLI user + agent-native developer | Storefront — what is it, why care, how to start | Under 200 lines (the ceiling in `.claude/rules/shipping.md`) |
 | `changelog.d/` → `CHANGELOG.md` at release | All users | Factual, one fragment per user-visible change, cite PR | See `changelog.d/README.md` |
-| `CONTRIBUTING.md` | Self-hoster, OSS contributor | Concrete steps to land a change | As short as possible |
-| `docs/architecture.md` | AI-native dev, technical migrant | Guarantees → diagram → contract → negative space | One page |
+| `CONTRIBUTING.md` | Self-hoster filling a finance gap, OSS contributor | Concrete steps to land a change | As short as possible |
+| `docs/architecture.md` | Agent-native developer, Tiller-migrant CLI user | Guarantees → diagram → contract → negative space | One page |
 | `docs/audience.md` | Anyone evaluating | Honest "this is and isn't for you" | Tight |
-| `docs/comparison.md` | Migrant from cloud PFM | 7-wide table with ✅/❌/🟡; no text-heavy cells | Tight |
+| `docs/comparison.md` | Tiller-migrant CLI user | 7-wide table with ✅/❌/🟡; no text-heavy cells | Tight |
 | `docs/features.md` | Anyone evaluating | Capability snapshot, link out to guides | Bullets |
 | `docs/roadmap.md` | Anyone evaluating | Milestone tables (📐 designed / 🗓️ planned / ✅ shipped) | One page |
-| `docs/guides/` | Power-user migrant | How-to, one task per guide, CLI examples | One screen per concept |
-| `docs/reference/` | AI-native dev | Complete and dense — table-shaped for lookup pages; deep technical context for the mechanics pages (`account-identifiers`, `auto-rule-pipeline`, `cli-startup-flow`); **Mermaid over ASCII** for diagrams | As long as needed |
+| `docs/guides/` | Tiller-migrant CLI user | How-to, one task per guide, CLI examples | One screen per concept |
+| `docs/reference/` | Agent-native developer | Complete and dense — table-shaped for lookup pages; deep technical context for the mechanics pages (`account-identifiers`, `auto-rule-pipeline`, `cli-startup-flow`); **Mermaid over ASCII** for diagrams | As long as needed |
 
 ## Stored anti-patterns (do not reintroduce)
 
@@ -147,7 +143,7 @@ subagent verbatim. They keep accidentally regrowing:
   - `changelog.d/` (pending changes) and `CHANGELOG.md` (preserved history)
   - `docs/specs/`, `docs/decisions/` (internal — out of scope anyway)
 
-  When used in the exception files, the canonical milestone set is **whatever `docs/roadmap.md`'s milestone-overview table lists** — that table is the single source of truth (per `.claude/rules/shipping.md`), so this rule can't go stale as milestones are added. As of this writing that's `M0`, `M1`, `M2A`–`M2E`, `M3A`–`M3E`, plus `Post-launch`; treat the live roadmap table as authoritative if it has moved on. Don't introduce a code that isn't in the roadmap table, and don't strip one that is — if a doc and the roadmap disagree, the roadmap wins.
+  When used in the exception files, the canonical milestone set is **whatever `docs/roadmap.md`'s milestone-overview table lists** — that table is the single source of truth (per `.claude/rules/shipping.md`), so this rule can't go stale as milestones are added. Don't introduce a code that isn't in the roadmap table, and don't strip one that is — if a doc and the roadmap disagree, the roadmap wins.
 
   **Post-v1:** this rule relaxes. Semantic versions (`v1.2`, `v2.0`) become meaningful to readers and can appear in user-facing prose ("new in v1.2"). Revisit this rule once v1 ships.
 
@@ -175,7 +171,7 @@ Print a one-line scope summary before doing anything:
 For each in-scope code change, identify what a *user* (not a developer)
 would notice. Common mappings:
 
-- New CLI command → README "What works today" reference + relevant guide + `added` fragment
+- New CLI command → `docs/features.md` entry + relevant guide + `added` fragment
 - New MCP tool → MCP guide + features.md + `added` fragment
 - New import format → import guide + features.md + `added` fragment
 - Behavior change in existing command → relevant guide + `changed` fragment
@@ -186,8 +182,7 @@ If a change has no user-visible effect, say so in the report and move on.
 
 ### 2. Dispatch one subagent per affected doc file, in parallel
 
-Cap at **3 in flight** to avoid overwhelming Claude Code's subagent
-capacity. Larger sets process in waves.
+Dispatch them in a single message so they run concurrently.
 
 Each subagent receives a self-contained prompt with:
 
@@ -227,19 +222,19 @@ adjacent persona** to surface unstated assumptions. Example weightings:
 
 | File | Personas to review as |
 |---|---|
-| `README.md` | Power-user migrant + AI-native dev + Self-hoster |
-| `docs/architecture.md` | AI-native dev + Power-user migrant |
-| `docs/audience.md` | Tracker (post-launch) + FIRE / wealth-builder (post-launch) + Power-user migrant |
-| `docs/comparison.md` | Power-user migrant + Self-hoster |
-| `docs/features.md` | Power-user migrant + AI-native dev |
-| `docs/guides/*` | Power-user migrant + AI-native dev |
-| `docs/reference/*` (lookup pages) | AI-native dev + Power-user migrant |
-| `docs/reference/*` (mechanics pages) | AI-native dev + AI-native dev (different framing: "new to project" + "deep in the stack") |
+| `README.md` | Tiller-migrant CLI user + agent-native developer + self-hoster filling a finance gap |
+| `docs/architecture.md` | Agent-native developer + Tiller-migrant CLI user |
+| `docs/audience.md` | Tracker + FIRE / wealth-builder + Tiller-migrant CLI user |
+| `docs/comparison.md` | Tiller-migrant CLI user + self-hoster filling a finance gap |
+| `docs/features.md` | Tiller-migrant CLI user + agent-native developer |
+| `docs/guides/*` | Tiller-migrant CLI user + agent-native developer |
+| `docs/reference/*` (lookup pages) | Agent-native developer + Tiller-migrant CLI user |
+| `docs/reference/*` (mechanics pages) | Agent-native developer twice (different framing: "new to project" + "deep in the stack") |
 
 Each persona-review subagent receives:
 
 - Path of the **single freshly-written doc**.
-- The persona description verbatim from `docs/audience.md` (or the persona table above for stable definitions).
+- The persona description verbatim from `docs/audience.md`.
 - This prompt template:
 
   > Read [DOC PATH] as [PERSONA NAME — paragraph description]. You are not editing — you are critiquing.
@@ -252,7 +247,7 @@ Each persona-review subagent receives:
   > 4. **Jobs-to-be-done** — list the JTBD this doc *does* answer for you; list adjacent JTBDs it *should* answer but doesn't.
   > 5. **One-sentence verdict** — would you keep reading the docs after this page, bounce, or feel oriented to act?
   >
-  > Keep the report under 400 words. Do not propose specific rewrites — that's the next subagent's job. Surface gaps and concerns; don't author replacements.
+  > Report findings only, no preamble. Do not propose specific rewrites — that's the next subagent's job. Surface gaps and concerns; don't author replacements.
 
 Use `subagent_type: general-purpose`.
 

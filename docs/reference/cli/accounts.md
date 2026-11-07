@@ -124,7 +124,7 @@ Usage: `moneybin accounts set [OPTIONS] {account_id}`
 | `--clear-display-name` | flag |  |  |
 | `--clear-default-cost-basis-method` | flag |  |  |
 | `--clear-investment-source-type` | flag |  |  |
-| `--yes, -y` | flag |  | Skip soft-validation prompt for non-canonical values |
+| `--yes, -y` | flag |  | Approve the displayed source-switch impact and skip soft-validation prompts |
 
 ## moneybin accounts resolve
 

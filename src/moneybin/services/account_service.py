@@ -12,13 +12,14 @@ import dataclasses
 import io
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from difflib import SequenceMatcher, get_close_matches
 from functools import lru_cache
 from importlib import resources
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from moneybin import error_codes
 from moneybin.database import Database, has_column
@@ -51,6 +52,9 @@ from moneybin.tables import (
     DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
 )
+
+if TYPE_CHECKING:
+    from moneybin.investments.source_choice import SourceChoicePreview
 
 logger = logging.getLogger(__name__)
 
@@ -884,6 +888,7 @@ class AccountService:
         display_name: str | None | object = None,
         default_cost_basis_method: str | None | object = None,
         investment_source_type: str | None | object = None,
+        verify_source_choice: Callable[[SourceChoicePreview], None] | None = None,
         include_in_net_worth: bool | None = None,
         archived: bool | None = None,
     ) -> tuple[AccountSettings, list[dict[str, str]]]:
@@ -1087,36 +1092,60 @@ class AccountService:
             return current, warnings
 
         target = dataclasses.replace(current, **cast(dict[str, Any], diff))
-        self._settings_repo.set(
-            account_id=target.account_id,
-            display_name=target.display_name,
-            official_name=target.official_name,
-            last_four=target.last_four,
-            account_subtype=target.account_subtype,
-            account_type=target.account_type,
-            holder_category=target.holder_category,
-            currency_code=target.currency_code,
-            credit_limit=target.credit_limit,
-            archived=target.archived,
-            archived_at=target.archived_at,
-            include_in_net_worth=target.include_in_net_worth,
-            default_cost_basis_method=target.default_cost_basis_method,
-            investment_source_type=target.investment_source_type,
-            investment_source_type_changed_at=target.investment_source_type_changed_at,
-            archived_changed_at=target.archived_changed_at,
-            account_type_changed_at=target.account_type_changed_at,
-            account_subtype_changed_at=target.account_subtype_changed_at,
-            currency_code_changed_at=target.currency_code_changed_at,
-            default_cost_basis_method_changed_at=(
-                target.default_cost_basis_method_changed_at
-            ),
-            actor=actor,
-            context=(
-                {INCLUDE_DECISION_MARKER: True}
-                if include_in_net_worth is not None
-                else None
-            ),
-        )
+        self._db.begin()
+        try:
+            if "investment_source_type" in diff:
+                from moneybin.services.investment_membership_service import (
+                    InvestmentMembershipService,
+                )
+
+                preview = InvestmentMembershipService(self._db).preview_source_choice(
+                    account_id, target.investment_source_type
+                )
+                if preview.changes:
+                    if verify_source_choice is None:
+                        raise UserError(
+                            "Investment source changes require preview confirmation.",
+                            code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+                            hint="Use accounts set to review and confirm the impact.",
+                        )
+                if verify_source_choice is not None:
+                    verify_source_choice(preview)
+            self._settings_repo.set(
+                account_id=target.account_id,
+                display_name=target.display_name,
+                official_name=target.official_name,
+                last_four=target.last_four,
+                account_subtype=target.account_subtype,
+                account_type=target.account_type,
+                holder_category=target.holder_category,
+                currency_code=target.currency_code,
+                credit_limit=target.credit_limit,
+                archived=target.archived,
+                archived_at=target.archived_at,
+                include_in_net_worth=target.include_in_net_worth,
+                default_cost_basis_method=target.default_cost_basis_method,
+                investment_source_type=target.investment_source_type,
+                investment_source_type_changed_at=target.investment_source_type_changed_at,
+                archived_changed_at=target.archived_changed_at,
+                account_type_changed_at=target.account_type_changed_at,
+                account_subtype_changed_at=target.account_subtype_changed_at,
+                currency_code_changed_at=target.currency_code_changed_at,
+                default_cost_basis_method_changed_at=(
+                    target.default_cost_basis_method_changed_at
+                ),
+                in_outer_txn=True,
+                actor=actor,
+                context=(
+                    {INCLUDE_DECISION_MARKER: True}
+                    if include_in_net_worth is not None
+                    else None
+                ),
+            )
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
         logger.info(
             f"Updated settings for account {account_id}: fields={sorted(diff.keys())}"
         )

@@ -15,6 +15,7 @@ stored back over an original.
 from __future__ import annotations
 
 import logging
+import shlex
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -155,6 +156,7 @@ class MissingRate:
     the pair is unfetched, and ``gathered`` says whether refresh plans it at all
     — when it does not, ``targets`` is the display-currency list that would, or
     empty when the profile already declares the most targets it may.
+    ``rate_targets_unset`` means neither home nor display targets are configured.
     """
 
     from_currency: str
@@ -162,6 +164,7 @@ class MissingRate:
     unsupported: tuple[str, ...] = ()
     gathered: bool = True
     targets: tuple[str, ...] = ()
+    rate_targets_unset: bool = False
 
 
 def apply_rate(amount: Decimal, rate: Decimal) -> Decimal:
@@ -516,14 +519,23 @@ class CurrencyService:
         ``hint`` goes straight to stderr and rides the JSON envelope, so the user
         still learns which day failed on both surfaces.
         """
+        manual_command = shlex.join([
+            "moneybin",
+            "fx",
+            "set",
+            base,
+            quote,
+            on.isoformat(),
+            "<rate>",
+        ])
         if self._adapter is None:
             FX_RATE_RESOLUTION_TOTAL.labels(outcome="unavailable").inc()
             raise RateUnavailableError(
                 f"No stored {base}/{quote} rate for the requested date, and no "
                 "rate provider is configured.",
                 code=error_codes.FX_RATE_UNAVAILABLE,
-                hint=f"Record the {on.isoformat()} rate yourself with "
-                "'moneybin fx set'.",
+                hint=f"Record the rate yourself with `{manual_command}`; "
+                "replace <rate> with the known rate.",
             )
 
         started = time.monotonic()
@@ -535,8 +547,8 @@ class CurrencyService:
                 f"No stored {base}/{quote} rate for the requested date, and the "
                 "rate provider could not be reached.",
                 code=error_codes.FX_RATE_UNAVAILABLE,
-                hint=f"Retry when the network is back, or record the "
-                f"{on.isoformat()} rate yourself with 'moneybin fx set'.",
+                hint=f"Retry when the network is back, or record the rate "
+                f"yourself with `{manual_command}`; replace <rate> with the known rate.",
             ) from exc
         except FeedError as exc:
             # Split from the branch above because the remedies differ. The
@@ -550,8 +562,8 @@ class CurrencyService:
                 "rate provider did not return one.",
                 code=error_codes.FX_RATE_UNAVAILABLE,
                 hint=f"The provider is answering but not with a usable rate. "
-                f"Try again later, or record the {on.isoformat()} rate yourself "
-                "with 'moneybin fx set'.",
+                f"Try again later, or record the rate yourself with `{manual_command}`; "
+                "replace <rate> with the known rate.",
             ) from exc
         finally:
             FX_RATE_FETCH_DURATION_SECONDS.labels(
@@ -575,8 +587,8 @@ class CurrencyService:
                 "rate provider did not return a usable one.",
                 code=error_codes.FX_RATE_UNAVAILABLE,
                 hint="The provider answered with a rate MoneyBin cannot store. "
-                f"Record the {on.isoformat()} rate yourself with "
-                "'moneybin fx set'.",
+                f"Record the rate yourself with `{manual_command}`; "
+                "replace <rate> with the known rate.",
             )
         if observation.rate_date > on:
             # `RateObservation` documents the hop as resolving *back* to the last
@@ -597,8 +609,8 @@ class CurrencyService:
                 "rate provider answered for a later day.",
                 code=error_codes.FX_RATE_UNAVAILABLE,
                 hint="The provider priced a day after the one asked about. "
-                f"Record the {on.isoformat()} rate yourself with "
-                "'moneybin fx set'.",
+                f"Record the rate yourself with `{manual_command}`; "
+                "replace <rate> with the known rate.",
             )
         if (on - observation.rate_date).days > MAX_BACKWARD_RESOLUTION_DAYS:
             # The check above bounds the other direction. Backwards is the
@@ -613,8 +625,8 @@ class CurrencyService:
                 "rate provider answered for a much earlier day.",
                 code=error_codes.FX_RATE_UNAVAILABLE,
                 hint="The provider answered for a day too far before the one "
-                f"asked about to be its publication day. Record the "
-                f"{on.isoformat()} rate yourself with 'moneybin fx set'.",
+                f"asked about to be its publication day. Record the rate yourself "
+                f"with `{manual_command}`; replace <rate> with the known rate.",
             )
         return observation
 
@@ -626,27 +638,35 @@ class CurrencyService:
         supported pair missing one date needs a different date. Reporting only
         "no rate available" sends the user to the wrong one.
 
-        The date stays out of the message here for the same reason as in
-        ``_fetch``. The unsupported-currency branch carries no date at all —
-        that failure is about the currency, and naming a day would suggest
-        another one might work.
+        The date stays in the recovery hint, out of the logged message.
         """
         FX_RATE_RESOLUTION_TOTAL.labels(outcome="unavailable").inc()
+        manual_command = shlex.join([
+            "moneybin",
+            "fx",
+            "set",
+            base,
+            quote,
+            on.isoformat(),
+            "<rate>",
+        ])
         unsupported = self._unsupported(base, quote)
         if unsupported:
             names = ", ".join(sorted(unsupported))
             return RateUnavailableError(
                 f"The rate provider publishes no series for {names}.",
                 code=error_codes.FX_CURRENCY_UNSUPPORTED,
-                hint="Record the rate yourself with 'moneybin fx set' — this "
-                "pair will not become available by retrying.",
+                hint=f"Record the rate yourself with `{manual_command}`; "
+                "replace <rate> with the known rate. This pair will not "
+                "become available by retrying.",
             )
         return RateUnavailableError(
             f"The rate provider published no {base}/{quote} rate for the "
             "requested date.",
             code=error_codes.FX_RATE_UNAVAILABLE,
             hint=f"Nothing was published for {on.isoformat()}. Try a nearby "
-            "date, or record the rate yourself with 'moneybin fx set'.",
+            f"date, or record the rate yourself with `{manual_command}`; "
+            "replace <rate> with the known rate.",
         )
 
     def _unsupported(self, base: str, quote: str) -> set[str]:
@@ -706,6 +726,10 @@ class CurrencyService:
         planned = {canonical_currency(code) for code in (*declared, home) if code}
         if quote in planned:
             return MissingRate(base, quote)
+        if home is None and not declared:
+            return MissingRate(
+                base, quote, gathered=False, targets=(quote,), rate_targets_unset=True
+            )
         if len(declared) >= DISPLAY_CURRENCY_TARGETS_MAX_COUNT:
             # Adding one more would be refused, so no target list is a fix.
             return MissingRate(base, quote, gathered=False)

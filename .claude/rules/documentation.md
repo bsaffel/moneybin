@@ -1,5 +1,5 @@
 ---
-description: "Documentation: diagram conventions when authoring Markdown"
+description: "Documentation: public vs private visibility, issue admission gate, external product references, ledger-grade voice, diagram conventions"
 paths: ["**/*.md"]
 ---
 
@@ -94,8 +94,7 @@ two failure modes to avoid are equally bad — marketing cadence (superlatives,
 
 ### Recognizing drift — the two AI cadences
 
-Doc-pass drift lands in one of two cadences, and both read as machine-written
-(origin: the PR #323 voice pass and its survey of 27 admired OSS READMEs):
+Doc-pass drift lands in one of two cadences, and both read as machine-written:
 
 - **Marketing cadence** — superlatives, "not just X but Y", rule-of-three
   lists, emoji-templated headings, competitor-framed heroes, adjectives asked

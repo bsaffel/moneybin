@@ -14,9 +14,9 @@ account numbers, or spending patterns.
 - [ADR-002: Privacy Tiers](../decisions/002-privacy-tiers.md) — data custody model
   (Local Only / Encrypted Sync / Managed). This spec governs **data at rest** in the
   Local Only tier; `privacy-and-ai-trust.md` governs **data in motion** to AI backends.
-- [ADR-004: E2E Encryption](../decisions/004-e2e-encryption.md) — age + Argon2 encryption
-  for Plaid sync payloads flowing through the server. Different problem from local file
-  encryption (this spec).
+- [ADR-017: Client-owned encryption and recovery](../decisions/017-client-owned-encryption-and-recovery.md) —
+  custody and recovery principles; [ADR-004](../decisions/004-e2e-encryption.md)
+  is historical. Local database key management remains governed by ADR-009.
 - [ADR-005: Security Tradeoffs](../decisions/005-security-tradeoffs.md) — threat model
   for the sync tier.
 - [ADR-009: Encryption Key Management](../decisions/009-encryption-key-management.md) —

@@ -14,11 +14,15 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.extractors.plaid.extractor import PlaidExtractor
 from moneybin.repositories.account_links_repo import AccountLinksRepo
+from moneybin.repositories.investment_event_members_repo import (
+    InvestmentEventMembersRepo,
+)
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from moneybin.services.account_links_service import AccountLinksService
 from tests.moneybin.test_extractors.test_plaid_investment_receipts import (
     receipt_payload as receipt_payload,
 )
+from tests.moneybin.test_investments.comparison_helpers import install_comparison_models
 from tests.moneybin.test_services.test_account_identity_selections import (
     seed_account_selections,
 )
@@ -69,6 +73,9 @@ def _seed_plaid(db: Database, payload: PlaidSyncDataResponse) -> PlaidSyncDataRe
         decided_by="user",
         actor="cli",
     )
+    # Existing source-ID elections exercise the pre-cut safety boundary.
+    assert not InvestmentEventMembersRepo(db).has_history()
+    install_comparison_models(db)
     path = Path(
         "src/moneybin/sqlmesh/models/prep/stg_plaid__investment_transactions.sql"
     )

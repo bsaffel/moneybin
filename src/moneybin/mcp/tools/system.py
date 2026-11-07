@@ -246,8 +246,8 @@ def system_audit_undo(operation_id: str) -> ResponseEnvelope[SystemAuditUndoPayl
     The undo *consumer* for any audited annotation/correction (notes, tags,
     splits, categories, budgets, rules, merchants, match decisions). Synthesizes
     each row's inverse from its audit before/after image and writes new audit
-    rows under a fresh operation id — so this undo is itself undoable (its
-    ``undo_operation_id`` is returned).
+    rows under a fresh ``undo_operation_id``. Redo is offered only when that
+    operation supports it; investment rejection undo cannot currently be redone.
 
     Block-don't-cascade: if a *later* operation modified the same rows, this
     refuses with ``undo_cascade_blocked`` and lists the blocker operation ids in
@@ -259,14 +259,16 @@ def system_audit_undo(operation_id: str) -> ResponseEnvelope[SystemAuditUndoPayl
     value the write path no longer admits, e.g. a pre-existing blank category —
     not retryable; recreate the entity with a valid value instead).
 
-    Writes app.audit_log plus the reversed app.* rows; revert this undo by
-    calling system_audit_undo again on the returned undo_operation_id.
+    Writes app.audit_log plus the reversed app.* rows. When supported, the
+    returned action reverts this undo using its undo_operation_id.
     """
     from moneybin.database import get_database
     from moneybin.orchestration.account_mutations import undo_operation
+    from moneybin.services.undo_service import UndoService
 
     with get_database(read_only=False) as db:
         result = undo_operation(db, operation_id, actor="mcp")
+        can_redo = UndoService(db).get(result.undo_operation_id).can_undo
     return build_envelope(
         data=SystemAuditUndoPayload(
             undo_operation_id=result.undo_operation_id,
@@ -277,7 +279,9 @@ def system_audit_undo(operation_id: str) -> ResponseEnvelope[SystemAuditUndoPayl
         actions=[
             "Undo this undo with "
             f"system_audit_undo(operation_id='{result.undo_operation_id}')",
-        ],
+        ]
+        if can_redo
+        else [],
     )
 
 
@@ -375,7 +379,7 @@ def system_audit_get(operation_id: str) -> ResponseEnvelope[SystemAuditGetPayloa
             "app.* surface (e.g. a raw import); re-apply manually."
         )
     else:
-        hint = (
+        hint = detail.undo_refusal_message or (
             "Cannot be undone as-is — it was already reversed or changed no "
             "reversible rows."
         )
@@ -888,8 +892,8 @@ def register_system_tools(mcp: FastMCP) -> None:
         system_audit_undo,
         "system_audit_undo",
         "Undo one complete audited operation by operation_id. The inverse "
-        "mutation is itself audited and undoable; dependency conflicts return "
-        "the blocking operation IDs.",
+        "mutation is itself audited; redo is offered only when supported. "
+        "Dependency conflicts return the blocking operation IDs.",
     )
 
 

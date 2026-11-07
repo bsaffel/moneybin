@@ -6,6 +6,7 @@ from moneybin.database import Database
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from tests.moneybin.test_investments.comparison_helpers import seed_account_metadata
 
 
 @pytest.fixture
@@ -29,6 +30,9 @@ def comparison_db(db: Database) -> Database:
         source_origin="origin",
         decided_by="user",
         actor="test",
+    )
+    seed_account_metadata(
+        db, "account", native="native_account", origin="origin", currency="USD"
     )
     SecurityLinksRepo(db).insert(
         security_id="security",

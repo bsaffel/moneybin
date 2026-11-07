@@ -1,4 +1,4 @@
-"""Bridge payload + response shapes for Phase 2b PDF escalation (Reqs 8, 9, 14).
+"""Bridge payload + response shapes for Phase 2b PDF escalation (Reqs 8, 9).
 
 When the deterministic rung can't extract confidently from a native-text PDF,
 or when a saved recipe stopped reconciling, MoneyBin escalates to the agent
@@ -8,10 +8,10 @@ ratifies.
 
 This module owns the two data-shape contracts:
 
-- ``BridgeRequest`` — what MoneyBin sends out (the egress payload). Wraps the
-  document text, a per-table preview, the layout fingerprint, the transparency
-  notice (Req 14, surfaced explicitly so the agent cannot accidentally elide
-  it), and a request kind ("propose_recipe" on first contact vs.
+- ``BridgeRequest`` — what MoneyBin sends out (the egress payload), built only
+  after a recorded consent (``pdf-disclosure-consent.md``). Wraps the redacted
+  document text, a redacted per-table preview, the layout fingerprint, and a
+  request kind ("propose_recipe" on first contact vs.
   "replay_failed_re_derive" when a saved recipe broke).
 - ``BridgeResponse`` — what the agent sends back: a Pydantic-validated Recipe
   plus the rows it extracted.
@@ -25,19 +25,13 @@ service-layer types.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from moneybin.extractors.pdf.fingerprint import compute_fingerprint
 from moneybin.extractors.pdf.ir import PdfDocument
 from moneybin.extractors.pdf.recipe import Recipe, is_yearless_date_format
-
-TRANSPARENCY_NOTICE = (
-    "Proceeding will surface this PDF's content to the agent you are "
-    "currently driving MoneyBin with. The document text and table headers "
-    "are sent verbatim — there is no redacted preview. An entry is written "
-    "to app.audit_log (action: smart_import_parse) recording the hand-off."
-)
 
 # How many leading rows per table to ship to the agent. Keeps the preview
 # compact (the executor only needs to see the pattern shape, not every row)
@@ -69,7 +63,6 @@ class BridgeResponseError(ValueError):
 class BridgeRequest:
     """Typed payload contents the bridge ships to the driving agent."""
 
-    transparency_notice: str
     source_file: str
     # text_lines joined with '\n'; agent can re-split as needed.
     document_text: str
@@ -101,32 +94,47 @@ def build_bridge_request(
     doc: PdfDocument,
     *,
     request_kind: RequestKind,
+    redact: Callable[[str], str],
     saved_recipe_for_re_derive: dict[str, Any] | None = None,
 ) -> BridgeRequest:
-    """Build the typed bridge request envelope from a PDF IR + decision context.
+    """Build the bridge request; ``redact`` runs over the text and every table cell.
 
-    The service layer wraps the resulting request in ``BridgePayload`` (from
-    ``import_confirmation``) before raising ``ImportConfirmationRequiredError``
-    — keeping the extractor-layer module free of service-layer types so the
-    architecture-layering test stays happy.
+    Building it is the release point, so callers invoke it only after consent.
+    The service wraps the result in ``BridgePayload`` (from
+    ``import_confirmation``), keeping this module free of service-layer types.
     """
     tables_preview = [
         {
             "page": t.page,
-            "header": list(t.header),
-            "rows": t.rows[:_TABLE_PREVIEW_ROW_CAP],
+            "header": [redact(cell) for cell in t.header],
+            "rows": [
+                [redact(cell) for cell in row]
+                for row in t.rows[:_TABLE_PREVIEW_ROW_CAP]
+            ],
         }
         for t in doc.tables
     ]
     return BridgeRequest(
-        transparency_notice=TRANSPARENCY_NOTICE,
         source_file=doc.source_file,
-        document_text="\n".join(doc.text_lines),
+        document_text=redact("\n".join(doc.text_lines)),
         tables_preview=tables_preview,
-        fingerprint=compute_fingerprint(doc),
+        # Fingerprint headers are raw table cells; local matching recomputes it.
+        fingerprint=redact_strings(compute_fingerprint(doc), redact),
         request_kind=request_kind,
-        saved_recipe_for_re_derive=saved_recipe_for_re_derive,
+        saved_recipe_for_re_derive=redact_strings(saved_recipe_for_re_derive, redact),
     )
+
+
+def redact_strings[T](value: T, redact: Callable[[str], str]) -> T:
+    """Apply ``redact`` to every string leaf of nested dicts and lists."""
+    if isinstance(value, str):
+        return cast(T, redact(value))
+    if isinstance(value, dict):
+        items = cast(dict[Any, Any], value).items()
+        return cast(T, {k: redact_strings(v, redact) for k, v in items})
+    if isinstance(value, list):
+        return cast(T, [redact_strings(v, redact) for v in cast(list[Any], value)])
+    return value
 
 
 def recipe_for_agent(recipe: Recipe) -> dict[str, Any]:

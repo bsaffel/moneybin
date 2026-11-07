@@ -31,7 +31,8 @@ exemption that needs no per-PR reason is the standing one below.
 One class of PR is exempt without a per-PR reason: a PR opened by
 `dependabot[bot]` whose diff changes only `uv.lock`, workflow files under
 `.github/workflows/`, and the dependency tables of `pyproject.toml`
-(`project.dependencies`, `project.optional-dependencies`, `dependency-groups`).
+(`project.dependencies`, `project.optional-dependencies`, `dependency-groups`,
+`build-system.requires`).
 `scripts/check_changelog_exemption.py` decides this from the PR's author and
 diff, which are fixed when the PR opens. It never reads a label, because
 Dependabot labels a PR after opening it and the `opened` run would race the

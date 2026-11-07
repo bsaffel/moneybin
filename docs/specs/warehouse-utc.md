@@ -38,6 +38,18 @@ Driver infinity sentinels retain their existing output refusal.
 
 ## Source meaning
 
+Storage resolution and display precision do not establish source precision.
+Six fractional digits in canonical output do not prove that the source measured
+microseconds or supplied a time of day. A business `DATE` identifies a calendar
+day, not an instant; protocol defaults and midnight placeholders do not add
+observed time-of-day precision.
+
+UTC normalization preserves the instant, not the original timezone or offset.
+Retain original timezone, offset and precision evidence where the source supplies
+it; leave missing evidence unknown. Before using normalized timestamps for
+intraday ordering or analysis, establish that the source precision supports
+that use from retained source evidence.
+
 | Input | Treatment |
 |---|---|
 | SimpleFIN epoch seconds | Convert directly to UTC instants. |
@@ -140,6 +152,11 @@ a missing or unverifiable final journal and never promotes an unpromoted candida
 - Audit replay decodes known temporal fields before mutation with persisted,
   field-specific provenance. Preserve original JSON, nulls and omitted fields;
   alias-forwarded undo uses the same decoder.
+  A legacy rule may bind to one audit ID and its `before` or `after` image
+  when the two images came from different clocks. Both selectors are required
+  together; rules without selectors retain their field-and-occurrence scope.
+  Replay supplies the image side explicitly and requires exactly one matching
+  rule. Scoped rules do not override overlapping rules or rewrite audit JSON.
 - Timestamp cursors use canonical UTC keys and stable tie-breakers. Scopes
   carry temporal contract version 2; old tokens request a pagination restart.
   DATE/id and other non-temporal cursor scopes retain their contracts.

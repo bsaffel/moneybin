@@ -1,7 +1,9 @@
-/* Union of all balance observation sources: OFX statement balances,
-   tabular running balances, user-entered assertions, and Plaid sync snapshots.
-   One row per observation. Consumed by core.fct_balances_daily for
-   carry-forward + reconciliation. */
+/* One row per balance observation from OFX, tabular running balances,
+   user-entered assertions, Plaid, or SimpleFIN. No unique key is declared here:
+   multiple observations may share (account_id, balance_date), so joining on
+   account/date can multiply rows. Balances are alternative point-in-time claims,
+   never amounts to sum across observations or dates. core.fct_balances_daily owns
+   source selection, carry-forward, reconciliation, and one account/day grain. */
 MODEL (
   name core.fct_balances,
   kind VIEW

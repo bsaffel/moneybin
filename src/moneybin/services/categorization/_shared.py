@@ -94,6 +94,9 @@ SOURCE_PRIORITY: dict[str, int] = {
     "ai": 7,
 }
 
+# The one provider whose vocabulary is seeded; curation covers imported terms only.
+PROVIDER_SOURCE_TYPE = "plaid"
+
 
 def priority_case_sql(column_expr: str) -> str:
     """Render a SQL CASE expression mapping categorized_by → numeric priority.

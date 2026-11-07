@@ -8,6 +8,7 @@ would satisfy the assertions while proving nothing about that.
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import date, datetime
@@ -18,7 +19,7 @@ import pytest
 
 from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import UserError
+from moneybin.errors import NextStep, UserError
 from moneybin.limits import DISPLAY_CURRENCY_TARGETS_MAX_COUNT
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.catalog import ReportCatalog
@@ -701,6 +702,118 @@ def test_an_unfetched_pair_names_refresh_as_its_fix(saved_db: Database) -> None:
     assert "fx set" not in reason
 
 
+@pytest.mark.parametrize("targets", [[], ["USD"], ["GBP"]])
+def test_missing_home_currency_uses_configured_display_targets(
+    saved_db: Database, targets: list[str]
+) -> None:
+    _record_provider_catalog(saved_db, "USD", "EUR")
+    ProfileSettingsRepo(saved_db).set_display_currency_targets(targets, actor="test")
+
+    outcome = convert_records(
+        [_row()],
+        classes=_CLASSES,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=CurrencyService(saved_db),
+        today=date(2026, 10, 16),
+    )
+    reason = outcome.degraded_reason
+
+    assert reason is not None
+    assert "2026-03-05" not in reason
+    assert "cannot gather rates without a home currency" not in reason
+    if not targets:
+        assert "no home currency or display currency targets are configured" in reason
+        assert "moneybin" not in reason
+        assert [action.cli for action in outcome.actions] == [
+            ("profile", "set", "display_currency_targets", "USD"),
+            ("refresh",),
+        ]
+        assert all(action.required for action in outcome.actions)
+    elif "USD" in targets:
+        assert reason.endswith("run 'moneybin refresh' to gather them")
+        assert not outcome.actions
+    else:
+        assert "profile set display_currency_targets GBP,USD" in reason
+        assert "'moneybin refresh'" in reason
+        assert not outcome.actions
+
+
+@pytest.mark.parametrize("quiet", [False, True])
+def test_missing_target_recovery_survives_conversion_and_quiet_rendering(
+    saved_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    quiet: bool,
+) -> None:
+    from moneybin.cli.output import OutputFormat
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+    from moneybin.reports._framework.cli_register import (
+        render_report_result,
+        report_note_lines,
+    )
+
+    _record_provider_catalog(saved_db, "EUR", "USD")
+    result = _run(saved_db, display_currency="USD")
+    optional = NextStep("optional exploration", ("reports", "list"), "reports_list()")
+    result = replace(result, actions=[*result.actions, optional])
+    profile = "sample profile " + "p" * 100
+    monkeypatch.setattr("moneybin.cli.utils._flags.profile", profile)
+    policy = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=100,
+        height=24,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+
+    def _policy(**_kwargs: object) -> TerminalPolicy:
+        return policy
+
+    monkeypatch.setattr(
+        "moneybin.reports._framework.cli_register.get_terminal_policy", _policy
+    )
+    render_report_result(
+        result, OutputFormat.TEXT, cli_actor="test", quiet=quiet, no_pager=True
+    )
+    output = capsys.readouterr().out
+    commands = [
+        shlex.split(line)
+        for line in output.splitlines()
+        if line.startswith("moneybin ")
+    ]
+
+    assert [
+        "moneybin",
+        "--profile",
+        profile,
+        "profile",
+        "set",
+        "display_currency_targets",
+        "USD",
+    ] in commands
+    assert [
+        "moneybin",
+        "--profile",
+        profile,
+        "refresh",
+    ] in commands
+    assert "! EUR->USD is unfetched" in output
+    assert ("Optional exploration" in output) is not quiet
+    notes = "\n".join(report_note_lines(result, quiet=quiet, symbols=policy.symbols))
+    assert "display_currency_targets USD" in notes
+    assert "refresh" in notes
+    assert "home_currency" not in notes
+    assert "fx set" not in notes
+
+
 def test_an_unrecorded_provider_list_never_claims_unsupported(
     saved_db: Database,
 ) -> None:
@@ -738,11 +851,15 @@ def test_an_undeclared_target_names_the_setting_refresh_reads(
     assert "'moneybin refresh'" in reason
 
 
-def test_a_full_target_list_is_not_offered_as_the_fix(saved_db: Database) -> None:
+@pytest.mark.parametrize("home_currency", [None, "GBP"])
+def test_a_full_target_list_is_not_offered_as_the_fix(
+    saved_db: Database, home_currency: str | None
+) -> None:
     """One more target than the limit allows would be refused, so name fx set."""
     _record_provider_catalog(saved_db, "USD", "EUR", "GBP")
     settings = ProfileSettingsRepo(saved_db)
-    settings.set_home_currency("GBP", actor="test")
+    if home_currency is not None:
+        settings.set_home_currency(home_currency, actor="test")
     full = (
         "AUD BRL CAD CHF CNY CZK DKK HKD HUF IDR ILS INR ISK JPY KRW MXN MYR NOK "
         "NZD PHP"

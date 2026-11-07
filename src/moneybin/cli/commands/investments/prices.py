@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 import typer
 
@@ -39,6 +40,7 @@ from moneybin.cli.utils import (
     handle_cli_errors,
     parse_cli_date,
     parse_cli_decimal,
+    warn_refresh_steps,
 )
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
@@ -49,6 +51,9 @@ from moneybin.privacy.payloads.investments import (
     InvestmentUnpricedEntry,
 )
 from moneybin.protocol.envelope import build_envelope
+
+if TYPE_CHECKING:
+    from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 app = typer.Typer(
     help="Market prices for held securities: refresh feeds, mark by hand, inspect",
@@ -74,7 +79,9 @@ class PriceSourceChoice(StrEnum):
     TRADE_IMPLIED = "trade_implied"
 
 
-def _report_refresh_failure(error: str | None) -> None:
+def _report_refresh_failure(
+    error: str | None, steps: RefreshStepOutcome | None
+) -> None:
     """Surface a failed apply and exit non-zero, in both output modes.
 
     ``refresh()`` soft-fails so the pull's already-committed rows survive, which
@@ -84,6 +91,8 @@ def _report_refresh_failure(error: str | None) -> None:
     re-fetching rows that are sitting there. Mirrors ``sync pull``.
     """
     if not error:
+        if steps is not None and steps.has_failure:
+            raise typer.Exit(1)
         return
     logger.warning(
         f"transforms failed ({error}); the new closes landed in raw and are "
@@ -140,6 +149,12 @@ def investments_prices_pull(
     to rebuild the models in the same command, or run 'moneybin refresh'
     afterwards.
     """
+    from moneybin.adapters.refresh_adapters import (
+        refresh_investment_hints,
+        refresh_step_actions,
+        refresh_steps_fields,
+    )
+
     with handle_cli_errors(
         cli_actor="investments_prices_pull",
         payload_type=InvestmentPricePullPayload,
@@ -162,6 +177,22 @@ def investments_prices_pull(
                 refresh_module.refresh(db, steps=["transform"]) if refresh else None
             )
 
+    steps = (
+        refresh_module.step_outcome(
+            refreshed, requested=refresh_module.expand_steps(["transform"])
+        )
+        if refreshed is not None
+        else None
+    )
+    warn_refresh_steps(steps)
+    actions = refresh_investment_hints(steps)
+    recovery_actions = refresh_step_actions(
+        steps, apply_failed=refreshed is not None and refreshed.error is not None
+    )
+    incomplete = bool(
+        (refreshed is not None and refreshed.error is not None)
+        or (steps is not None and steps.has_failure)
+    )
     payload = InvestmentPricePullPayload(
         rows_written=result.rows_written,
         observations=result.observations,
@@ -177,14 +208,30 @@ def investments_prices_pull(
         ],
         refreshed=bool(refreshed and refreshed.applied),
         refresh_error=refreshed.error if refreshed else None,
+        **refresh_steps_fields(steps),
     )
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(data=payload), output, cli_actor="investments_prices_pull"
+            build_envelope(
+                data=payload,
+                actions=actions,
+                recovery_actions=recovery_actions or None,
+            ),
+            output,
+            cli_actor="investments_prices_pull",
         )
-        _report_refresh_failure(payload.refresh_error)
+        _report_refresh_failure(payload.refresh_error, steps)
         return
-    disclosures: list[str] = []
+    disclosures = list(actions)
+    if steps is not None and steps.transform_blocked:
+        disclosures.append(
+            "Price rows are saved, but investment planning blocked the rebuild; "
+            "they are not valuing holdings yet."
+        )
+    for action in recovery_actions:
+        if action.tool == "refresh_run":
+            for step in action.arguments["steps"]:
+                disclosures.append(f"Retry with 'moneybin refresh --step {step}'.")
     if result.queued_for_review:
         disclosures.append(
             "Next: review feed keys with moneybin investments securities links pending."
@@ -198,7 +245,10 @@ def investments_prices_pull(
     parts: list[object] = [
         build_summary(
             [
-                ("Outcome", "partial" if result.failed_sources else "complete"),
+                (
+                    "Outcome",
+                    "partial" if result.failed_sources or incomplete else "complete",
+                ),
                 ("New price rows", str(result.rows_written)),
                 ("Securities priced", str(result.securities_priced)),
                 ("Feed keys awaiting review", str(result.queued_for_review)),
@@ -225,14 +275,17 @@ def investments_prices_pull(
         _emit_receipt(
             "Price refresh",
             [
-                ("Outcome", "partial" if result.failed_sources else "complete"),
+                (
+                    "Outcome",
+                    "partial" if result.failed_sources or incomplete else "complete",
+                ),
                 ("New price rows", str(result.rows_written)),
                 ("Securities priced", str(result.securities_priced)),
                 ("Feed keys awaiting review", str(result.queued_for_review)),
             ],
             disclosures=disclosures,
         )
-    _report_refresh_failure(payload.refresh_error)
+    _report_refresh_failure(payload.refresh_error, steps)
 
 
 @app.command("set")

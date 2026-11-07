@@ -20,9 +20,15 @@ _DEPENDENCY_FILES = ("uv.lock", PYPROJECT, ".github/workflows/*.yml")
 
 def _without_dependency_tables(pyproject: dict[str, Any]) -> dict[str, Any]:
     """Return pyproject minus the tables a dependency update may edit."""
-    stripped = {**pyproject, "project": dict(pyproject.get("project", {}))}
+    stripped = {
+        **pyproject,
+        "project": dict(pyproject.get("project", {})),
+        "build-system": dict(pyproject.get("build-system", {})),
+    }
     stripped["project"].pop("dependencies", None)
     stripped["project"].pop("optional-dependencies", None)
+    # Dependabot's uv ecosystem raises build requirements too (e.g. setuptools).
+    stripped["build-system"].pop("requires", None)
     stripped.pop("dependency-groups", None)
     return stripped
 

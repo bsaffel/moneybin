@@ -464,6 +464,7 @@ async def test_review_summary_returns_exact_kind_status_matrix() -> None:
             "account_links",
             "merchant_links",
             "security_links",
+            "source_categories",
         )
         for status in ("pending", "history")
     }
@@ -870,6 +871,7 @@ async def test_review_standard_registrar_renders_closed_contract() -> None:
             "account_links",
             "merchant_links",
             "security_links",
+            "source_categories",
         },
     )
     assert_literal_values(

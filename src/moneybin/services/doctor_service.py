@@ -72,7 +72,10 @@ from moneybin.tables import (
     IMPORTS,
     INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_UNIONED,
+    INVESTMENT_EVENT_LEGS,
+    INVESTMENT_EVENT_MEMBERS,
     INVESTMENT_MATCH_DECISIONS,
+    INVESTMENT_MATCH_FIELD_RESOLUTIONS,
     LOT_SELECTIONS,
     MANUAL_TRANSACTIONS,
     MATCH_DECISIONS,
@@ -140,6 +143,7 @@ _EXCHANGE_RATE_OVERRIDES_PK_EXPR = (
 # code-supplied-literal contract per `.claude/rules/security.md` (allowlist
 # dynamic SQL), closing the door before a future caller passes a tainted value.
 _ALLOWED_UPDATED_EXPRS = frozenset({
+    "GREATEST(created_at, retired_at)",
     "GREATEST(decided_at, reversed_at)",
     "GREATEST(detected_at, resolved_at)",
 })
@@ -637,7 +641,13 @@ class DoctorService:
             )
         ]
         try:
-            result = SyncCompletenessService(self._db).assess()
+            completeness = SyncCompletenessService(self._db)
+            result = completeness.assess()
+            transactions = SyncCompletenessService(self._db, transaction_scope=True)
+            transaction_result = transactions.assess()
+            affected_windows = (
+                completeness.affected_windows | transactions.affected_windows
+            )
         except Exception:
             return InvariantResult(
                 name=name,
@@ -653,24 +663,64 @@ class DoctorService:
                 detail="No local sync evidence.",
                 affected_ids=[],
             )
-        if result.complete:
+        if result.complete and transaction_result.complete:
             return InvariantResult(
                 name=name,
                 status="pass",
                 detail="No known gaps in local sync evidence.",
                 affected_ids=[],
             )
+        transaction_reasons = [
+            reason
+            for reason in transaction_result.reasons
+            if reason not in result.reasons
+        ]
         return InvariantResult(
             name=name,
             status="warn",
-            detail="Local sync coverage is incomplete: "
+            detail="Local SimpleFIN sync coverage is incomplete: "
             + "; ".join(
                 f"{reason.kind} ({reason.affected_account_count} affected accounts, "
                 f"{reason.unresolved_scope_count} unresolved scopes)"
                 for reason in result.reasons
-            ),
+            )
+            + (
+                (". " if result.reasons else "")
+                + "Transaction evidence: "
+                + "; ".join(
+                    f"{reason.kind} ({reason.affected_account_count} affected accounts, "
+                    f"{reason.unresolved_scope_count} unresolved scopes)"
+                    for reason in transaction_reasons
+                )
+                if transaction_reasons
+                else ""
+            )
+            + (
+                ". Affected evidence dates/windows (UTC): "
+                + "; ".join(sorted(affected_windows))
+                if affected_windows
+                else ""
+            )
+            + ". Inspect sync_status for connection details and the account-link "
+            "review queue for unresolved accounts; native identifiers are withheld.",
             affected_ids=[],
-            recovery_actions=actions,
+            recovery_actions=[
+                *actions,
+                RecoveryAction(
+                    tool="accounts",
+                    arguments={},
+                    rationale="Inspect included resolved accounts; sync_status locates affected connections.",
+                    confidence="suggested",
+                    idempotent=True,
+                ),
+                RecoveryAction(
+                    tool="reviews",
+                    arguments={"kind": "account_links"},
+                    rationale="Locate unresolved or overlapping accounts without exposing native identifiers.",
+                    confidence="suggested",
+                    idempotent=True,
+                ),
+            ],
         )
 
     def _run_sync_health(self) -> InvariantResult:
@@ -922,6 +972,18 @@ class DoctorService:
         job — the heuristic limitation the helper documents.
         """
         return [
+            self._run_app_audit_coverage(
+                INVESTMENT_EVENT_MEMBERS,
+                "membership_id",
+                updated_col="projection_changed_at",
+                full=full,
+            ),
+            self._run_app_audit_coverage(
+                INVESTMENT_MATCH_FIELD_RESOLUTIONS,
+                "resolution_id",
+                updated_expr="GREATEST(created_at, retired_at)",
+                full=full,
+            ),
             self._run_app_audit_coverage(
                 INVESTMENT_MATCH_DECISIONS, "proposal_id", full=full
             ),
@@ -1766,35 +1828,43 @@ class DoctorService:
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _run_investment_unresolved_securities(self) -> InvariantResult:
-        """Ledger rows a provider security key never resolved to a canonical security.
+        """Flag unresolved source securities before complete-binding projection.
 
-        ``cost_basis.py`` silently skips every ``LedgerEvent`` with
-        ``security_id is None`` when grouping for lot computation — so an
-        unresolved security is not just a missing label, it quietly
-        understates lots and gains for that event. Scoped to rows whose
-        staging row carried a non-NULL provider security key (a genuine
-        security-bearing event); a NULL key is a legitimate cash-only row
-        (deposit, withdrawal, ...) and not a gap. Reads the ledger, which
-        already excludes rows an account's investment source choice leaves out.
+        Comparison legs retain events withheld from the ledger, including fully
+        disposed positions. Saved source choices exclude observations; reviewed
+        memberships reserve native identities even when current evidence drifts.
         """
         name = "investment_unresolved_securities"
         try:
             rows = self._db.execute(
                 f"""
-                SELECT c.investment_transaction_id
-                FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} AS c
-                JOIN {STG_PLAID_INVESTMENT_TRANSACTIONS.full_name} AS p
-                  ON p.investment_transaction_id = c.investment_transaction_id
-                WHERE c.security_id IS NULL
-                  AND p.source_security_key IS NOT NULL
-                ORDER BY c.investment_transaction_id
+                SELECT l.native_reference
+                FROM {INVESTMENT_EVENT_LEGS.full_name} AS l
+                LEFT JOIN {SECURITIES.full_name} AS s
+                  ON s.security_id = l.security_id
+                LEFT JOIN {ACCOUNT_SETTINGS.full_name} AS choice
+                  ON choice.account_id = l.account_id
+                WHERE l.has_source_security
+                  AND s.security_id IS NULL
+                  AND (choice.investment_source_type IS NULL
+                       OR choice.investment_source_type = l.source_type)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM {INVESTMENT_EVENT_MEMBERS.full_name} AS m
+                      WHERE m.member_kind = 'source_event'
+                        AND m.retired_at IS NULL
+                        AND m.decision_id IS NOT NULL
+                        AND m.source_type = l.source_type
+                        AND m.source_origin = l.source_origin
+                        AND m.native_reference = l.native_reference
+                  )
+                ORDER BY l.native_reference, l.source_type, l.source_origin
                 """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # core/staging view absent before first transform
+        except Exception as e:  # comparison view absent before first transform
             return InvariantResult(
                 name=name,
                 status="skipped",
-                detail=f"ledger/staging unavailable: {e}",
+                detail=f"source comparison unavailable ({type(e).__name__})",
                 affected_ids=[],
             )
         if rows:
@@ -1802,10 +1872,10 @@ class DoctorService:
                 name=name,
                 status="warn",
                 detail=(
-                    f"{len(rows)} investment transaction(s) carry a provider "
-                    "security key the resolver never bound to a canonical "
-                    "security — cost basis silently drops these events, "
-                    "understating lots and gains; run "
+                    f"{len(rows)} investment transaction(s) carry a source "
+                    "security reference not bound to a canonical security — "
+                    "these events are withheld from the investment ledger and "
+                    "cost-basis calculations; run "
                     "`moneybin investments securities links pending` to review "
                     "and resolve them"
                 ),

@@ -24,12 +24,14 @@ every surface that shows it says why and how to fix it.
 ## Why this exists
 
 An account can carry investment history from manual recording and from sync at
-once. Until investment matching (M1J.7) can accept a Match, nothing collapses
-those histories, so every event in such an account exists twice. Lots
+once. Investment matching (M1J.7) collapses only the events a user accepts as
+a Match; every unmatched event in such an account exists twice. Lots
 double-count, cost basis mixes two accountings, and realized gains, which feed
 tax filings, are wrong.
 
-Measured on `main` at `fd81f46e3`:
+Measured on `main` before this feature (`fd81f46e3`). The Golden projection
+(#754) that landed afterwards leaves every row unchanged for events with no
+accepted Match:
 
 | Surface | Today for an overlapping account |
 |---|---|
@@ -128,8 +130,14 @@ excluding `subtype = 'opening_bootstrap'`, carry more than one distinct
 `source_type`. That is the predicate `dim_holdings.sql`'s
 `source_overlap_accounts` CTE and `InvestmentService._source_overlap_accounts`
 use today, moved to one place. Because the model already applies the
-`investment_source_type` filter (`fct_investment_transactions.sql:133`), an
-account with a source chosen is `reconciled` without further logic.
+`investment_source_type` filter, an account with a source chosen is
+`reconciled` without further logic.
+
+On the Golden projection, `source_type` is the event's deterministic
+representative source type, so an accepted Match collapses to one
+representative source and stops counting as a second source. An account whose
+cross-source events are all matched reads `reconciled`; one unmatched event
+from a second source keeps it `unreconciled`.
 
 The flag is account-scoped on purpose. One duplicated buy changes which lots
 every later sale of that security consumes, so even a lot opened by a
@@ -319,8 +327,9 @@ The user chooses which source feeds the account:
 `moneybin accounts set <account> --investment-source-type manual|plaid`, or
 `accounts_set` over MCP. The next refresh rebuilds the ledger from one source and
 every derived row becomes `reconciled`. Clearing the setting brings the
-overlap back. Once M1J.7 can accept Matches, accepting them becomes a second
-path, under the promotion rules in that spec.
+overlap back. Accepting M1J.7 Matches is a second path, under the promotion
+rules in that spec: once every cross-source event in the account is matched,
+it reads `reconciled`.
 
 ## Verification
 

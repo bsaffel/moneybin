@@ -9,7 +9,7 @@ MoneyBin is a single-user, local-first personal finance application. The storage
 
 - **Analytical workloads** -- aggregations, window functions, multi-table joins across transactions, accounts, balances, and categorization rules. SQLMesh-driven medallion transforms (`raw` → `prep` → `core`) push thousands of rows through `UNION ALL` + `ROW_NUMBER()` dedup logic on every import.
 - **Embedded deployment** -- the database lives next to the app. No separate server to install, secure, or keep running. The MCP server and CLI both open the same file.
-- **Encryption at rest** -- AES-256-GCM on the database file (see [ADR-004](004-e2e-encryption.md)). Per-user, no shared infrastructure.
+- **Encryption at rest** -- AES-256-GCM on the database file (see [ADR-009](009-encryption-key-management.md)). Per-user, no shared infrastructure.
 - **Direct file/dataframe interop** -- read CSV, OFX-derived parquet, and Polars/Pandas dataframes without an ETL hop.
 - **Modern SQL** -- CTEs, window functions, `QUALIFY`, struct/list types, and SQLMesh's column-level lineage all assume a recent SQL dialect.
 
@@ -101,13 +101,12 @@ DataFusion is a credible alternative we'd revisit if SQLMesh added a first-class
 - **Single-writer.** DuckDB does not support concurrent writers to the same file. Acceptable: the import pipeline is the sole writer. Read-only connections from the MCP server are safe.
 - **Younger ecosystem.** Smaller community than Postgres/SQLite, fewer third-party tools, occasional rough edges in the Python client. Mitigated by DuckDB's rapid release cadence and Motherduck-funded development.
 - **Format stability.** DuckDB's storage format has changed across major versions; database files require migration on upgrade. Mitigated by pinning the `duckdb` version and exercising upgrade paths in CI.
-- **Encryption is app-level.** DuckDB does not natively encrypt the storage file; we wrap it via AES-256-GCM at the file layer. See [ADR-004](004-e2e-encryption.md) and [ADR-009](009-encryption-key-management.md).
+- **Encryption-key management remains app-owned.** DuckDB encrypts the database file with AES-256-GCM; MoneyBin supplies the key through its local key-management contract. See [ADR-009](009-encryption-key-management.md).
 - **No row-level concurrency for an eventual multi-user mode.** If MoneyBin ever grows beyond a single-user local app, the storage layer would need to be revisited. The `Database` abstraction keeps this swap localized.
 
 ## References
 
 - [ADR-001: Medallion Data Layers](001-medallion-data-layers.md)
-- [ADR-004: End-to-End Encryption](004-e2e-encryption.md)
 - [ADR-006: SQLMesh Replaces dbt](006-sqlmesh-replaces-dbt.md)
 - [ADR-009: Encryption Key Management](009-encryption-key-management.md)
 - [DuckDB vs SQLite (DuckDB docs)](https://duckdb.org/why_duckdb)

@@ -126,6 +126,9 @@ def test_current_staging_uses_final_delivery_at_equal_extraction_times(
     query = next(
         node for node in parse_model(path.read_text()) if isinstance(node, exp.Select)
     )
+    from tests.moneybin.db_helpers import install_prep_view
+
+    install_prep_view(db, "stg_plaid__investment_revisions")
     sql = query.sql(dialect="duckdb")
     rows = db.execute(sql).fetchall()
     assert len(rows) == len(receipt_payload.investment_transactions)

@@ -53,6 +53,14 @@ contract. Do not build a custom terminal toolkit or add dependencies for decorat
 7. Suggestions use executable CLI commands with known arguments and relevant
    explicit profile context. Do not substitute Python calls, MCP method names,
    raw dictionaries, or opaque cursors for human guidance.
+   Preserve an explicitly supplied `--profile`, including shell quoting. Without
+   that option, hints use the same active-profile resolution as a normal CLI
+   invocation; rendering a hint does not resolve or freeze profile state.
+   Keep a short reason and command together when they fit. Otherwise wrap the
+   reason and put the complete command on its own line. Commands never fold or
+   truncate, even when wider than the terminal. Unknown values remain clearly
+   marked arguments for the user to supply; hints never choose a currency,
+   exchange rate, or accounting method for the user.
 
 ## Tables, money, and identity
 

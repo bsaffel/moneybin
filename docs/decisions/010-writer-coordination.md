@@ -297,7 +297,7 @@ FastAPI, MCP server, and Plaid sync share a single process and the existing
 ## References
 
 - [ADR-000: DuckDB as the Embedded Analytical Store](000-duckdb-as-embedded-store.md)
-- [ADR-004: End-to-End Encryption](004-e2e-encryption.md)
+- [ADR-004: End-to-End Encryption](004-e2e-encryption.md) — historical superseded proposal
 - [ADR-009: Encryption Key Management](009-encryption-key-management.md)
 - [`architecture-shared-primitives.md`](../specs/architecture-shared-primitives.md) §(a)
 - `web-ui-prototype.md` — first consumer of the write coordination contract (spec forthcoming)

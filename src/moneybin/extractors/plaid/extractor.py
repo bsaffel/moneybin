@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -22,6 +23,7 @@ import polars as pl
 
 from moneybin.connectors.sync_models import (
     InstitutionResult,
+    PlaidRemovedTransaction,
     PlaidSyncAccount,
     PlaidSyncBalance,
     PlaidSyncDataResponse,
@@ -1182,7 +1184,10 @@ class PlaidExtractor:
             )
 
     def handle_removed_transactions(
-        self, removed_ids: list[str], *, provider_item_ids: set[str]
+        self,
+        removed_transactions: Sequence[PlaidRemovedTransaction | str],
+        *,
+        provider_item_ids: set[str],
     ) -> int:
         """Delete removed transactions within the batch's reported Plaid items.
 
@@ -1191,28 +1196,49 @@ class PlaidExtractor:
         and the CLI's "Removed N stale transactions" message, so it must reflect
         reality rather than the request.
         """
-        if not removed_ids:
+        if not removed_transactions:
             return 0
         if not provider_item_ids:
             raise ValueError("Plaid transaction removals require item scope")
-        placeholders = ", ".join("?" for _ in removed_ids)
+        removals = [
+            PlaidRemovedTransaction(transaction_id=removal)
+            if isinstance(removal, str)
+            else removal
+            for removal in removed_transactions
+        ]
+        placeholders = ", ".join("(?, ?::VARCHAR)" for _ in removals)
         item_placeholders = ", ".join("?" for _ in provider_item_ids)
-        parameters = [*removed_ids, *sorted(provider_item_ids)]
+        parameters = [
+            *sorted(provider_item_ids),
+            *(
+                value
+                for row in removals
+                for value in (row.transaction_id, row.account_id)
+            ),
+        ]
+        predicate = f"""
+            stored.source_origin IN ({item_placeholders})
+            AND EXISTS (
+                SELECT 1 FROM (VALUES {placeholders})
+                    AS removal(transaction_id, account_id)
+                WHERE removal.transaction_id = stored.transaction_id
+                    AND (removal.account_id IS NULL
+                         OR removal.account_id = stored.account_id)
+            )
+        """  # noqa: S608  # placeholders are ?, values parameterized
         # Pre-count to report the rows DELETE will actually affect. DuckDB doesn't
         # surface affected-row counts through this connection API, so a separate
         # COUNT(*) is the simplest accurate signal; the two statements share the
         # write lock for the duration of the call.
         count_row = self.db.execute(
-            f"""SELECT COUNT(*) FROM {PLAID_TRANSACTIONS.full_name}
-                WHERE transaction_id IN ({placeholders})
-                AND source_origin IN ({item_placeholders})""",  # noqa: S608  # placeholders are ?, values parameterized
+            f"""SELECT COUNT(*) FROM {PLAID_TRANSACTIONS.full_name} AS stored
+                WHERE {predicate}""",  # noqa: S608  # fixed table and parameterized predicate
             parameters,
         ).fetchone()
         deleted = int(count_row[0]) if count_row else 0
         self.db.execute(
-            f"""DELETE FROM {PLAID_TRANSACTIONS.full_name}
-                WHERE transaction_id IN ({placeholders})
-                AND source_origin IN ({item_placeholders})""",  # noqa: S608  # placeholders are ?, values parameterized
+            f"""DELETE FROM {PLAID_TRANSACTIONS.full_name} AS stored
+                WHERE {predicate}""",  # noqa: S608  # fixed table and parameterized predicate
             parameters,
         )
         return deleted

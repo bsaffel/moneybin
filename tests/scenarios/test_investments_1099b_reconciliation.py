@@ -86,11 +86,13 @@ Income aggregation (type IN dividend/interest/capital_gain_distribution):
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 
 import pytest
 
 from moneybin.database import Database
+from moneybin.tables import INVESTMENT_EVENT_MEMBERS
 from tests.scenarios._investments_seed import insert_event, insert_security
 from tests.scenarios._runner import load_shipped_scenario, scenario_env
 from tests.scenarios._runner.steps import run_step
@@ -99,11 +101,12 @@ _ACCOUNT = "acct_1099b"
 _REINVEST_GROUP = "grp_acme_ri"
 
 # Expected realized-gain rows as a flat list for exact, order-independent
-# per-row assertions. ACME A4 emits two matched rows (LONG L1 + SHORT L2); ZETA
+# per-row assertions, keyed by the seeded source reference rather than Golden ID.
+# ACME A4 emits two matched rows (LONG L1 + SHORT L2); ZETA
 # Z2 emits one matched (Lz) + one unmatched (oversold) row.
 _EXPECTED_ROWS: list[dict[str, object]] = [
     {
-        "disposal_txn_id": "acme_s1",
+        "source_transaction_id": "acme_s1",
         "quantity": Decimal("100"),
         "cost_basis": Decimal("2000.00"),
         "proceeds": Decimal("4000.00"),
@@ -112,7 +115,7 @@ _EXPECTED_ROWS: list[dict[str, object]] = [
         "basis_incomplete": False,
     },
     {
-        "disposal_txn_id": "acme_s1",
+        "source_transaction_id": "acme_s1",
         "quantity": Decimal("50"),
         "cost_basis": Decimal("2000.00"),
         "proceeds": Decimal("2000.00"),
@@ -121,7 +124,7 @@ _EXPECTED_ROWS: list[dict[str, object]] = [
         "basis_incomplete": False,
     },
     {
-        "disposal_txn_id": "zeta_s1",
+        "source_transaction_id": "zeta_s1",
         "quantity": Decimal("10"),
         "cost_basis": Decimal("500.00"),
         "proceeds": Decimal("1000.00"),
@@ -130,7 +133,7 @@ _EXPECTED_ROWS: list[dict[str, object]] = [
         "basis_incomplete": False,
     },
     {
-        "disposal_txn_id": "zeta_s1",
+        "source_transaction_id": "zeta_s1",
         "quantity": Decimal("5"),
         "cost_basis": Decimal("0.00"),
         "proceeds": Decimal("500.00"),
@@ -283,6 +286,39 @@ def test_investments_1099b_reconciliation() -> None:
         _seed_ledger(db)
         run_step("transform", scenario.setup, db, env=env)
 
+        # Resolve fixture references through published provenance, never raw IDs.
+        members = db.execute(
+            f"""
+            SELECT native_reference, investment_transaction_id, event_group_id
+            FROM {INVESTMENT_EVENT_MEMBERS.full_name}
+            WHERE bound_account_id = ? AND source_type = 'manual'
+              AND member_kind = 'source_event' AND retired_at IS NULL
+            """,  # noqa: S608  # fixed TableRef; fixture values are parameterized
+            [_ACCOUNT],
+        ).fetchall()
+        source_references = {
+            "acme_b1",
+            "acme_b2",
+            "acme_ri_acq",
+            "acme_ri_income",
+            "acme_s1",
+            "acme_split",
+            "acme_roc",
+            "acme_div",
+            "zeta_b1",
+            "zeta_s1",
+        }
+        assert len(members) == len(source_references)
+        assert {str(row[0]) for row in members} == source_references
+        golden_ids = {str(row[0]): str(row[1]) for row in members}
+        golden_groups = {str(row[0]): str(row[2]) for row in members}
+        assert len(set(golden_ids.values())) == len(source_references)
+        assert all(
+            re.fullmatch(r"[0-9a-f]{12}", str(identity))
+            for row in members
+            for identity in row[1:]
+        )
+
         # --- core.fct_realized_gains: exact per-row reconciliation ----------
         gain_rows = db.execute(
             """
@@ -300,7 +336,7 @@ def test_investments_1099b_reconciliation() -> None:
         )
         expected_sigs = sorted(
             (
-                str(row["disposal_txn_id"]),
+                golden_ids[str(row["source_transaction_id"])],
                 row["quantity"],
                 row["cost_basis"],
                 row["proceeds"],
@@ -347,6 +383,8 @@ def test_investments_1099b_reconciliation() -> None:
         assert complete_count is not None and int(complete_count[0]) == 3
 
         # --- reinvest pairing: both rows exist, share the group id ----------
+        reinvest_group = golden_groups["acme_ri_acq"]
+        assert reinvest_group == golden_groups["acme_ri_income"]
         pair = db.execute(
             """
             SELECT type, quantity, amount, security_id
@@ -354,7 +392,7 @@ def test_investments_1099b_reconciliation() -> None:
             WHERE event_group_id = ?
             ORDER BY type
             """,
-            [_REINVEST_GROUP],
+            [reinvest_group],
         ).fetchall()
         assert len(pair) == 2, "reinvest must write exactly two paired rows"
         by_type = {str(r[0]): r for r in pair}

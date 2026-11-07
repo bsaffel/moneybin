@@ -28,6 +28,7 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.progress import operation_progress
 from moneybin.cli.render import (
+    build_next_step,
     build_rows,
     build_summary,
     compose_human_result,
@@ -38,6 +39,7 @@ from moneybin.cli.utils import (
     emit_cli_outcome,
     format_cli_attention,
     format_cli_failure,
+    generated_cli_command,
     get_terminal_policy,
 )
 from moneybin.crypto_constants import ENCRYPTION_KEY_BYTES, KEY_NAME, SALT_NAME
@@ -646,8 +648,7 @@ def db_info(
                 )[:limit]
                 truncated = True
             tables_summary = (
-                f"{len(shown_rows)} of {len(table_rows)} shown, largest first "
-                "— --limit 0 for all"
+                f"{len(shown_rows)} of {len(table_rows)} shown, largest first"
                 if truncated
                 else str(len(table_rows))
             )
@@ -678,6 +679,14 @@ def db_info(
                 )
             else:
                 parts.append(build_summary([("Tables", "No user tables found.")]))
+            if truncated:
+                parts.append(
+                    build_next_step(
+                        "Show all tables",
+                        generated_cli_command("db", "info", "--limit", "0"),
+                        terminal=policy,
+                    )
+                )
             emit_human_result(
                 compose_human_result(parts),
                 policy=policy,

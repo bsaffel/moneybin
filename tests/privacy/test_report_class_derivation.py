@@ -250,6 +250,8 @@ def test_the_unqualified_read_check_resolves_names_per_reference(
 def test_derives_every_derivable_core_view() -> None:
     derived, _excluded = derive_core_view_classes()
     assert set(derived) == {
+        ("core", "alias_investment_event_ids"),
+        ("core", "alias_investment_transaction_ids"),
         ("core", "dim_merchants"),
     }
 

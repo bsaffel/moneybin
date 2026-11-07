@@ -15,7 +15,16 @@ from __future__ import annotations
 from moneybin.database import Database
 from moneybin.repositories import concrete_repo_classes
 from moneybin.repositories.base import BaseRepo
-from moneybin.services.audit_service import AuditService
+from moneybin.services.audit_service import AuditEvent, AuditService
+from moneybin.tables import (
+    ACCOUNT_LINKS,
+    ACCOUNT_SETTINGS,
+    INVESTMENT_EVENT_MEMBERS,
+    INVESTMENT_MATCH_DECISIONS,
+    INVESTMENT_MATCH_FIELD_RESOLUTIONS,
+    LOT_SELECTIONS,
+    SECURITY_LINKS,
+)
 
 
 def _build_registry() -> dict[tuple[str, str], type[BaseRepo]]:
@@ -39,6 +48,69 @@ _REGISTRY: dict[tuple[str, str], type[BaseRepo]] = _build_registry()
 def is_registered(schema: str, table: str) -> bool:
     """Whether a repo owns ``schema.table`` (i.e. it sits on the undoable surface)."""
     return (schema, table) in _REGISTRY
+
+
+def undo_investment_operation(
+    events: list[AuditEvent], db: Database, *, actor: str
+) -> set[str]:
+    """Dispatch investment decisions before generic per-row reversal."""
+    selected = [
+        event
+        for event in events
+        if event.target_schema == INVESTMENT_MATCH_DECISIONS.schema
+        and event.target_table == INVESTMENT_MATCH_DECISIONS.name
+    ]
+    dependencies = [
+        event
+        for event in events
+        if event.target_schema == "app"
+        and event.target_table
+        in {ACCOUNT_SETTINGS.name, ACCOUNT_LINKS.name, SECURITY_LINKS.name}
+    ]
+    if dependencies and not any(
+        event.action in {"investment_match.accept", "investment_match.reject"}
+        for event in selected
+    ):
+        # Dependency inverses are applied by their repos. Their complete scope
+        # derives current successors; captured membership rows are never restored.
+        parents = {event.audit_id for event in dependencies}
+        return {
+            event.audit_id
+            for event in events
+            if event in selected
+            or event.target_schema == "app"
+            and event.target_table
+            in {INVESTMENT_EVENT_MEMBERS.name, INVESTMENT_MATCH_FIELD_RESOLUTIONS.name}
+            or event.target_schema == "app"
+            and event.target_table == LOT_SELECTIONS.name
+            and event.parent_audit_id in parents
+        }
+    if not selected:
+        return set()
+    from moneybin.services.investment_matching_service import InvestmentMatchingService
+
+    acceptances = [
+        event for event in selected if event.action == "investment_match.accept"
+    ]
+    if acceptances:
+        from moneybin.services.investment_membership_service import (
+            InvestmentMembershipService,
+        )
+
+        InvestmentMembershipService(db).undo_acceptances(acceptances, actor=actor)
+        rejections = [
+            event for event in selected if event.action == "investment_match.reject"
+        ]
+        if rejections:
+            InvestmentMatchingService(db).undo_rejections(rejections, actor=actor)
+        parents = {event.audit_id for event in selected}
+        return {
+            event.audit_id
+            for event in events
+            if event in selected or event.parent_audit_id in parents
+        }
+    InvestmentMatchingService(db).undo_rejections(selected, actor=actor)
+    return {event.audit_id for event in selected}
 
 
 def repo_for(

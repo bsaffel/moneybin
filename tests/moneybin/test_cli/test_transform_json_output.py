@@ -18,8 +18,8 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.transform import app
+from moneybin.orchestration.refresh import RefreshResult
 from moneybin.services.transform_service import (
-    ApplyResult,
     AuditResult,
     TransformPlan,
     TransformStatus,
@@ -94,14 +94,12 @@ def test_transform_status_json_pending_emits_action(
 
 
 def test_transform_apply_json(monkeypatch: pytest.MonkeyPatch) -> None:
-    canned = ApplyResult(applied=True, duration_seconds=1.5, error=None)
+    canned = RefreshResult(applied=True, duration_seconds=1.5, error=None)
 
-    def fake_apply(_self: Any) -> ApplyResult:
+    def fake_apply(_db: Any, **_kwargs: Any) -> RefreshResult:
         return canned
 
-    monkeypatch.setattr(
-        "moneybin.services.transform_service.TransformService.apply", fake_apply
-    )
+    monkeypatch.setattr("moneybin.orchestration.refresh.refresh", fake_apply)
     _patch_db(monkeypatch)
     result = runner.invoke(app, ["apply", "--output", "json"])
     assert result.exit_code == 0, result.output
@@ -120,14 +118,12 @@ def test_transform_apply_json_exits_nonzero_on_failure(
     Envelope alone isn't enough for shell pipelines — locks the
     transform.py:111 raise typer.Exit(1) after the JSON envelope is rendered.
     """
-    canned = ApplyResult(applied=False, duration_seconds=0.4, error="RuntimeError")
+    canned = RefreshResult(applied=False, duration_seconds=0.4, error="RuntimeError")
 
-    def fake_apply(_self: Any) -> ApplyResult:
+    def fake_apply(_db: Any, **_kwargs: Any) -> RefreshResult:
         return canned
 
-    monkeypatch.setattr(
-        "moneybin.services.transform_service.TransformService.apply", fake_apply
-    )
+    monkeypatch.setattr("moneybin.orchestration.refresh.refresh", fake_apply)
     _patch_db(monkeypatch)
     result = runner.invoke(app, ["apply", "--output", "json"])
     assert result.exit_code == 1, result.output

@@ -147,6 +147,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- preview                    -- Inspect a file without writing: tabular -> format
 |   |                                 + column mapping; PDF -> extraction verdict, row
 |   |                                 count, and any pending sign confirmation
+|   |     [--output text|json]       PDF only; JSON emits the standard ResponseEnvelope
+|   |     [--allow-ai-disclosure ID] PDF only; releases a bridge-eligible PDF's redacted
+|   |                                 content after the content-free run issued ID
 |   +-- revert                     -- Undo a recent import batch by import_id
 |   +-- status                     -- End-to-end import health and diagnostics
 |   +-- formats                    -- Manage saved import format definitions (tabular + PDF)
@@ -240,6 +243,8 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   error (exit 2). `--confirm-all` with `--type investment-matches` or `--type all` is also a
 |   usage error (exit 2), because silently skipping the mandatory-review queue would make a
 |   partial batch look complete.
+|   Investment rejection is available with audited undo. Investment confirmation validates
+|   the complete observed field-choice set but remains unavailable until Golden materialization.
 |
 +-- accounts
 |   +-- list                       -- List accounts [--include-archived] [--type TYPE]
@@ -446,6 +451,10 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |       |         term with the count of uncategorized transactions mapping it would
 |       |         categorize and up to 3 suggestions drawn from active categories;
 |       |         largest count first. A term with nothing left to categorize is omitted.
+|       +-- remove --namespace <source_origin> --category <text> [--subcategory <text>]
+|       |         [--source-type <type>] [--output json]
+|       |         Delete the term's mapping or ignore; withdraws what it categorized
+|       |         and returns the term to pending. A term with no mapping is refused.
 |       +-- set --namespace <source_origin> --category <text> [--subcategory <text>]
 |                 --into <category_id> | --new <name> | --ignore
 |                 Map one term to an existing category (--into), create a category and
@@ -563,11 +572,15 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- redact                     -- Test the project redaction pipeline on a value
 |   +-- grant <category>           -- Grant consent for an AI feature category
 |   |     [--backend NAME]           Override the configured backend for this grant
+|   |     [--recipient HOST]         Grant smart-import-parsing to an AI host (claude-ai,
+|   |                                 claude-code, cursor); exclusive with --backend;
+|   |                                 interactive only, refused inside an identified agent shell
 |   |     [--mode persistent|one-time]  Consent duration (default: persistent)
 |   |     [--output json]
 |   |     [--yes]                    Non-interactive mode
 |   +-- revoke <category>          -- Revoke a previously granted consent
 |   |     [--backend NAME]           Scope revocation to a specific backend
+|   |     [--recipient HOST]         Scope revocation to an AI host; exclusive with --backend
 |   |     [--output json]
 |   |     [--yes]
 |   +-- revoke-all                 -- Revoke all active consent grants (nuclear option)
@@ -1104,6 +1117,8 @@ ADR-016 and the archived MCP catalog. Current sibling mappings are:
 | `transactions matches pending/history` | `reviews(kind="matches", status=...)` |
 | `transactions categorize pending` | `reviews(kind="categorization", status="pending")` |
 | `categories list`, `merchants list` | `taxonomy(view=...)` |
+| `categories mappings pending` | `reviews(kind="source_categories", status="pending")` |
+| `categories mappings set/remove` | `taxonomy_set(items=[...])` with `kind="source_category"` items |
 | `transactions matches run` | `refresh_run(steps=["match"])` |
 | `investments matches run` | `refresh_run`, with `steps` set to `investment_match` after M1J.7 slice 2 |
 | `transform apply` | `refresh_run(steps=["transform"])` |

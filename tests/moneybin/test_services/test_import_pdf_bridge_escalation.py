@@ -1,10 +1,10 @@
 """Tests for Phase 2b Option B: import_files escalates bridge-eligible PDFs.
 
-When a driving agent is present (``actor_kind="agent"``), ``_import_pdf`` hands
-a bridge-eligible layout to the agent (raises ``ImportConfirmationRequiredError``
-with a ``BridgePayload``) instead of silently seeding — coherent with how the
-tabular path escalates unknown layouts. With no agent (``actor_kind="human"``),
-the Phase 2a seed fallback is preserved.
+When a driving agent is present (``actor_kind="agent"``), ``_import_pdf`` stops
+on a bridge-eligible layout instead of silently seeding: without a recorded
+consent it raises a content-free ``AIAssistanceRequired``; with one it raises a
+redacted ``BridgePayload``. With no agent (``actor_kind="human"``), the Phase 2a
+seed fallback is preserved and a consent argument changes nothing.
 
 These stub ``PDFExtractor.extract`` + ``route_pdf_import`` so the unit under
 test is ``_import_pdf``'s escalate-vs-seed branch, not routing math.
@@ -12,6 +12,7 @@ test is ``_import_pdf``'s escalate-vs-seed branch, not routing math.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -21,11 +22,33 @@ from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
 from moneybin.extractors.pdf.metadata import StatementMetadata
 from moneybin.extractors.pdf.routing import RouteDecision
 from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL
+from moneybin.privacy.disclosure import host_for_recipient_name
 from moneybin.services.import_confirmation import (
+    AIAssistanceRequired,
     BridgePayload,
+    DisclosureConsent,
     ImportConfirmationRequiredError,
+    confirmation_payload_dict,
 )
 from moneybin.services.import_service import ImportService
+
+
+def _consent(path: Path) -> DisclosureConsent:
+    """A one-time consent bound to ``path``'s current bytes."""
+    host = host_for_recipient_name("claude-code")
+    assert host is not None
+    return DisclosureConsent(
+        host=host,
+        approved_via="agent_relay",
+        grant_id=None,
+        binding_id="binding-0001",
+        remembered=False,
+        file_sha256s=frozenset({hashlib.sha256(path.read_bytes()).hexdigest()}),
+    )
+
+
+def _released() -> float:
+    return PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="released")._value.get()  # type: ignore[reportPrivateUsage]  # prometheus internals
 
 
 def _doc() -> PdfDocument:
@@ -136,7 +159,23 @@ def test_agent_bridge_eligible_escalates(
 
     outcome = excinfo.value.outcome
     assert outcome.channel == "pdf"
-    assert isinstance(outcome.proposed, BridgePayload)
+    assert outcome.reason == "ai_assistance_required"
+    assert isinstance(outcome.proposed, AIAssistanceRequired)
+    assert outcome.proposed.decision_reason == reason
+
+
+def test_agent_bridge_eligible_with_consent_releases_payload(
+    db: Database, tmp_path: Path, stub_pipeline: list[RouteDecision]
+) -> None:
+    stub_pipeline.append(_decision(reason="low_confidence"))
+    path = _pdf_path(tmp_path)
+
+    with pytest.raises(ImportConfirmationRequiredError) as excinfo:
+        ImportService(db).import_file(
+            path, refresh=False, actor_kind="agent", disclosure_consent=_consent(path)
+        )
+
+    assert isinstance(excinfo.value.outcome.proposed, BridgePayload)
 
 
 def test_agent_escalation_writes_no_import_log_row(
@@ -152,20 +191,92 @@ def test_agent_escalation_writes_no_import_log_row(
     assert _import_log_count(db, path) == 0
 
 
-def test_agent_escalation_audits_and_bumps_metric(
+def test_agent_escalation_without_consent_neither_audits_nor_counts(
     db: Database, tmp_path: Path, stub_pipeline: list[RouteDecision]
 ) -> None:
     stub_pipeline.append(_decision(reason="low_confidence"))
     path = _pdf_path(tmp_path)
 
-    before = PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="proposed")._value.get()  # type: ignore[reportPrivateUsage]
-    audit_before = _audit_count(db)
+    before = _released()
     with pytest.raises(ImportConfirmationRequiredError):
         ImportService(db).import_file(path, refresh=False, actor_kind="agent")
 
-    assert _audit_count(db) == audit_before + 1
-    after = PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="proposed")._value.get()  # type: ignore[reportPrivateUsage]
-    assert after == before + 1
+    assert _audit_count(db) == 0
+    assert _released() == before
+
+
+def test_agent_release_audits_and_bumps_metric(
+    db: Database, tmp_path: Path, stub_pipeline: list[RouteDecision]
+) -> None:
+    stub_pipeline.append(_decision(reason="low_confidence"))
+    path = _pdf_path(tmp_path)
+
+    before = _released()
+    with pytest.raises(ImportConfirmationRequiredError):
+        ImportService(db).import_file(
+            path, refresh=False, actor_kind="agent", disclosure_consent=_consent(path)
+        )
+
+    assert _audit_count(db) == 1
+    assert _released() == before + 1
+
+
+def test_import_files_reports_content_free_payload_per_bridge_file(
+    db: Database, tmp_path: Path, stub_pipeline: list[RouteDecision]
+) -> None:
+    """R3: a batch reports each bridge file as a content-free confirmation."""
+    stub_pipeline.append(_decision(reason="metadata_incomplete"))
+    path = _pdf_path(tmp_path)
+
+    batch = ImportService(db).import_files([path], refresh=False, actor_kind="agent")
+
+    (row,) = batch.per_file
+    assert row.status == "confirmation_required"
+    payload = row.confirmation_payload
+    assert payload is not None
+    assert payload["reason"] == "ai_assistance_required"
+    assert payload["bridge_payload"] is None
+    assert payload["ai_assistance"] == {
+        "file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "decision_reason": "metadata_incomplete",
+        "request_kind": "propose_recipe",
+    }
+    assert "Coffee" not in repr(payload)
+
+
+def test_import_files_applies_consent_to_bridge_files(
+    db: Database, tmp_path: Path, stub_pipeline: list[RouteDecision]
+) -> None:
+    stub_pipeline.append(_decision(reason="metadata_incomplete"))
+    path = _pdf_path(tmp_path)
+
+    batch = ImportService(db).import_files(
+        [path], refresh=False, actor_kind="agent", disclosure_consent=_consent(path)
+    )
+
+    (row,) = batch.per_file
+    assert row.confirmation_payload is not None
+    assert row.confirmation_payload["bridge_payload"] is not None
+
+
+def test_confirmation_payload_dict_ai_assistance_is_none_for_other_channels() -> None:
+    from moneybin.extractors.confidence import Confidence
+    from moneybin.services.import_confirmation import (
+        ConfirmationRequired,
+        ProposedMapping,
+    )
+
+    outcome = ConfirmationRequired(
+        channel="tabular",
+        confidence=Confidence(
+            score=0.5, tier="medium", flagged=(), missing_required=()
+        ),
+        proposed=ProposedMapping(
+            field_mapping={}, sample_values={}, unmapped_columns=()
+        ),
+        reason="unknown_layout",
+    )
+    assert confirmation_payload_dict(outcome)["ai_assistance"] is None
 
 
 @pytest.mark.parametrize("reason", ["no_transaction_table", "no_rows"])
@@ -194,9 +305,11 @@ def test_human_bridge_eligible_seeds_not_escalates(
     stub_pipeline.append(_decision(reason="low_confidence"))
     path = _pdf_path(tmp_path)
 
-    result = ImportService(db).import_file(path, refresh=False, actor_kind="human")
+    result = ImportService(db).import_file(
+        path, refresh=False, actor_kind="human", disclosure_consent=_consent(path)
+    )
 
     assert result.import_id is not None
     assert _import_log_count(db, path) == 1
-    # And no bridge hand-off was audited.
+    # A consent never turns a human-actor import into a disclosure.
     assert _audit_count(db) == 0

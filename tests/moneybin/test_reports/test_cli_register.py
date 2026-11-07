@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
+import shlex
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import date
@@ -22,6 +23,7 @@ from moneybin.cli.render import UNCATEGORIZED_LABEL, Money, Placeholder
 from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.cli.utils import generated_cli_command
 from moneybin.database import Database
+from moneybin.errors import NextStep
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.cli_register import (
     build_cli_command,
@@ -124,6 +126,66 @@ def _ascii_policy() -> TerminalPolicy:
         symbols=TerminalSymbols("OK", "!", "X", ">"),
         minus="-",
     )
+
+
+@pytest.mark.parametrize("profile", ["sample profile", "sample " + "p" * 110])
+@pytest.mark.parametrize("empty", [False, True])
+def test_report_next_step_keeps_quoted_command_on_one_physical_line(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    profile: str,
+    empty: bool,
+) -> None:
+    from moneybin.reports._framework.cli_register import render_report_result
+
+    policy = replace(_ascii_policy(), width=100)
+
+    def _policy(**_kwargs: object) -> TerminalPolicy:
+        return policy
+
+    monkeypatch.setattr(
+        "moneybin.reports._framework.cli_register.get_terminal_policy",
+        _policy,
+    )
+    monkeypatch.setattr("moneybin.cli.utils._flags.profile", profile)
+    reason = (
+        "inspect the stored account identifiers and report metadata before "
+        "choosing a safe recovery for the current report"
+    )
+    action = NextStep(
+        reason=reason,
+        cli=("reports", "explain", "test:balance_drift"),
+        mcp="reports_explain(report_id='test:balance_drift')",
+    )
+    result = replace(
+        _result(), actions=[action], records=[] if empty else _result().records
+    )
+
+    render_report_result(
+        cast(CatalogReportResult, result),
+        OutputFormat.TEXT,
+        cli_actor="test",
+        no_pager=True,
+    )
+    output = capsys.readouterr().out
+    command = generated_cli_command(*action.cli)
+
+    assert command in output.splitlines()
+    assert shlex.split(
+        next(line for line in output.splitlines() if line == command)
+    ) == ["moneybin", "--profile", profile, "reports", "explain", "test:balance_drift"]
+    assert output.count(command) == 1
+    assert "> Inspect the stored account identifiers" in output
+    assert "›" not in output
+
+    render_report_result(
+        cast(CatalogReportResult, result),
+        OutputFormat.TEXT,
+        cli_actor="test",
+        quiet=True,
+        no_pager=True,
+    )
+    assert "moneybin" not in capsys.readouterr().out
 
 
 def test_report_disclosures_follow_ascii_policy_and_keep_essential_facts(
