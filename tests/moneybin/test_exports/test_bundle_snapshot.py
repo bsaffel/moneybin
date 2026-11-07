@@ -14,6 +14,7 @@ from moneybin.build_info import get_build_info
 from moneybin.database import Database
 from moneybin.exports.catalog import BUNDLE_TABLES
 from moneybin.exports.service import ExportService
+from moneybin.exports.snapshot import build_bundle_snapshot
 from moneybin.tables import (
     BRIDGE_TRANSFERS,
     CATEGORIES,
@@ -355,3 +356,41 @@ def test_prepare_bundle_rejects_report_subject_fields(
             report_id=report_id,
             report_parameters=report_parameters,
         )
+
+
+@pytest.mark.integration
+def test_manifest_counts_unreconciled_rows(db: Database) -> None:
+    from datetime import datetime
+
+    from tests.moneybin.test_investments._overlap_seed import ACCOUNT, seed_overlap
+
+    seed_overlap(db)
+    ledger_rows = db.execute(
+        f"SELECT count(*) FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} WHERE account_id = ?",  # noqa: S608  # TableRef constant, not user input
+        [ACCOUNT],
+    ).fetchone()
+    assert ledger_rows is not None and ledger_rows[0] == 2
+
+    snap = build_bundle_snapshot(db, profile="test", created_at=datetime.now(UTC))
+    entry = {t["name"]: t for t in snap.manifest["tables"]}  # type: ignore[index]
+    assert entry["investment_transactions"]["unreconciled_row_count"] == 2
+    assert "unreconciled_row_count" not in entry["transactions"]
+
+
+@pytest.mark.integration
+def test_manifest_reports_zero_for_empty_carrier_table(db: Database) -> None:
+    from datetime import datetime
+
+    from moneybin.services.transform_service import TransformService
+    from tests.moneybin.test_investments._overlap_seed import (
+        seed_plaid_account,
+        seed_security,
+    )
+
+    seed_security(db)
+    seed_plaid_account(db)
+    result = TransformService(db).apply()
+    assert result.applied, f"transform failed: {result.error}"
+    snap = build_bundle_snapshot(db, profile="test", created_at=datetime.now(UTC))
+    entry = {t["name"]: t for t in snap.manifest["tables"]}  # type: ignore[index]
+    assert entry["investment_lots"]["unreconciled_row_count"] == 0

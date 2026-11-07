@@ -78,11 +78,14 @@ Usage: `moneybin investments list [OPTIONS]`
 Current positions: what you hold, what it is worth, and whether you are up.
 
 Market value and unrealized gain come from the most recent close at or
-before today. A position with no usable price, one whose share count is
-known wrong, or one in an account whose investment ledger arrives from two
-sources at once shows ``-`` rather than a zero, and the ``status`` column
-beside it says which — it prints by default, because the three cases have
-different remedies. A position is named by its ticker. ``--wide`` adds the
+before today. A position with no usable price, or one whose share count is
+known wrong, shows ``-`` rather than a zero, and the ``status`` column
+beside it says which — it prints by default, because the two cases have
+different remedies. A position in an account whose investment ledger
+arrives from two sources at once keeps its figures, which double-count: a
+``reconciliation`` column marks it ``unreconciled`` and a warning beneath
+the table names how many accounts are affected and the fix; ``-q`` does
+not silence it. A position is named by its ticker. ``--wide`` adds the
 security's catalog id, the cost basis, the average cost, and the date the
 price was observed, omitting those it cannot fit the terminal and saying
 which.
@@ -123,8 +126,10 @@ figure rather than the whole one, which qualifies the answer rather than
 commenting on the run.
 
 Rows in an account whose investment ledger arrives from two sources at once
-double-count outright — proceeds, basis and gain alike. That is disclosed
-the same way, and under ``--output json`` in ``summary.degraded_reason``.
+double-count outright — proceeds, basis and gain alike. They still print,
+marked ``unreconciled`` in a ``reconciliation`` column, and the warning is
+disclosed the same way; under ``--output json`` it rides
+``summary.degraded_reason``.
 
 Usage: `moneybin investments gains [OPTIONS]`
 
@@ -168,11 +173,11 @@ under the default ``--open`` reads ``open`` on every row — omitting those
 it cannot fit the terminal and saying which.
 
 Lots in an account whose investment ledger arrives from two sources at once
-double-count, because the two ledgers interleave rather than merge. The
-command says so on stderr and ``-q`` does not silence it — unlike the
-incomplete-basis note, which has a per-row marker to fall back on — and
-under ``--output json`` it rides ``summary.degraded_reason``, the same code
-the holdings read uses.
+double-count, because the two ledgers interleave rather than merge. They
+still print, marked ``unreconciled`` in a ``reconciliation`` column, with a
+warning beneath the table that ``-q`` does not silence; under
+``--output json`` it rides ``summary.degraded_reason``, the same code the
+holdings read uses.
 
 Usage: `moneybin investments lots list [OPTIONS]`
 
@@ -202,6 +207,11 @@ identification consumes lot selections. Elect it first with
 ``moneybin investments securities set \<security-id> --method specific``;
 ``--clear`` needs no election.
 
+A disposal in an account whose investment ledger arrives from two sources
+at once is still saved, with a warning on stderr that a selected lot may be
+one of a duplicated pair; ``-q`` does not silence it. Under
+``--output json`` the warning rides ``summary.degraded_reason``.
+
 Usage: `moneybin investments lots select [OPTIONS] {disposal_txn_id}`
 
 **Arguments**
@@ -217,6 +227,7 @@ Usage: `moneybin investments lots select [OPTIONS] {disposal_txn_id}`
 | `--lot` | text, repeatable |  | LOT_ID:QUANTITY (repeatable) — replaces the full selection |
 | `--clear` | flag |  | Clear all lot-selection overrides for this disposal (revert to FIFO) |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin investments matches
 

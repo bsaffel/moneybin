@@ -1019,6 +1019,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         # rather than TXN_DATE.
         "days_since_observed": DataClass.TIMESTAMP_OBSERVABILITY,
         "valuation_status": DataClass.TXN_TYPE,
+        "reconciliation_status": DataClass.TXN_TYPE,
         # The broker's non-authoritative claim about the same position. Being a
         # reference rather than MoneyBin's own figure changes nothing about its
         # sensitivity — it discloses the identical holding, so each column
@@ -1154,6 +1155,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "currency_code": DataClass.CURRENCY,
         "is_open": DataClass.TXN_TYPE,
         "source_transaction_id": DataClass.RECORD_ID,
+        "reconciliation_status": DataClass.TXN_TYPE,
         "basis_incomplete": DataClass.TXN_TYPE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
@@ -1172,6 +1174,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "source_conversion_id": DataClass.RECORD_ID,
         "source_investment_transaction_id": DataClass.RECORD_ID,
         "source_transfer_id": DataClass.RECORD_ID,
+        "reconciliation_status": DataClass.TXN_TYPE,
         "basis_incomplete": DataClass.TXN_TYPE,
         "coverage_status": DataClass.TXN_TYPE,
         "coverage_reason": DataClass.TXN_TYPE,
@@ -1200,6 +1203,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "source_type": DataClass.TXN_TYPE,
         "source_origin": DataClass.TXN_TYPE,
         "description": DataClass.DESCRIPTION,
+        "reconciliation_status": DataClass.TXN_TYPE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("core", "fct_realized_gains"): {
@@ -1219,6 +1223,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "term": DataClass.TXN_TYPE,
         "cost_basis_method": DataClass.TXN_TYPE,
         "basis_incomplete": DataClass.TXN_TYPE,
+        "reconciliation_status": DataClass.TXN_TYPE,
         "currency_code": DataClass.CURRENCY,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
@@ -1227,6 +1232,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "account_id": DataClass.RECORD_ID,
         "conversion_id": DataClass.RECORD_ID,
         "currency_lot_id": DataClass.RECORD_ID,
+        "reconciliation_status": DataClass.TXN_TYPE,
         "currency_code": DataClass.CURRENCY,
         "home_currency": DataClass.CURRENCY,
         "acquisition_date": DataClass.TXN_DATE,

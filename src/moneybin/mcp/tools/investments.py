@@ -170,19 +170,18 @@ def investments_holdings(
     cost), the `price_date` of the close used, and `days_since_observed`.
     `valuation_status` is one of `valued` (close is today's),
     `carried_forward` (the most recent close is older), `unpriced` (no close
-    resolved), `withheld` (a known-wrong share count, or lots that
-    disagree on currency), or `source_overlap` (the account's investment
-    ledger arrives from two sources at once, so every figure derived from it
-    would double-count). The last three
-    report `market_value`/`unrealized_gain` as null, never zero, and
-    `data.warnings` names how many rows those are. A `source_overlap` row also
-    sets `summary.degraded_reason` to `investment_source_overlap: ...` — its
-    remedy is outside the pipeline (revert the redundant import batch with
-    `import_revert`), so no refresh or price pull will clear it, and
-    `sync_disconnect` does not either: it stops future pulls and keeps the rows
-    already pulled. `investments_lots` and `investments_gains` read the same
-    interleaved ledger and set the same `degraded_reason` for that account, so
-    neither is the place to recover the number withheld here.
+    resolved), or `withheld` (a known-wrong share count, or lots that
+    disagree on currency). The last two report `market_value`/`unrealized_gain`
+    as null, never zero, and `data.warnings` names how many rows those are.
+
+    `reconciliation_status` is `unreconciled` when the account's investment
+    ledger arrives from two sources at once. The row's figures still publish
+    and count toward the totals, but they double-count, so
+    `summary.degraded_reason` is set to `investment_source_overlap: ...`,
+    naming the row and account counts. The remedy is outside the pipeline:
+    choose one source with `accounts_set(investment_source_type=...)`.
+    `investments_lots` and `investments_gains` read the same ledger and carry
+    the same marker and `degraded_reason` for that account.
 
     `data.max_days_since_observed` is the age in days of the stalest close any
     published figure rests on — the largest `days_since_observed` across the
@@ -231,10 +230,10 @@ def investments_lots(
     currency named by `summary.display_currency`.
 
     `summary.degraded_reason` is set to `investment_source_overlap: ...` when
-    any returned lot belongs to an account whose investment ledger arrives from
-    two sources at once: the two ledgers interleave, so those lots double-count
-    and their basis mixes two accountings. Same code, same meaning, as the
-    holdings read.
+    any returned lot has `reconciliation_status='unreconciled'` (its account's
+    ledger arrives from two sources at once): those lots still publish, but
+    they double-count and their basis mixes two accountings. Same code, same
+    meaning, as the holdings read.
     """
     with get_database(read_only=True) as db:
         result = InvestmentService(db).lots(
@@ -275,9 +274,9 @@ def investments_gains(
     in the currency named by `summary.display_currency`.
 
     `summary.degraded_reason` is set to `investment_source_overlap: ...` when
-    any returned row belongs to an account whose investment ledger arrives from
-    two sources at once — proceeds, basis and gain all double-count until one
-    of the two feeds is removed. Same code, same meaning, as the holdings read.
+    any returned row has `reconciliation_status='unreconciled'` — proceeds,
+    basis and gain still publish but double-count until one source is chosen
+    for the account. Same code, same meaning, as the holdings read.
     """
     with get_database(read_only=True) as db:
         result = InvestmentService(db).gains(
@@ -572,11 +571,14 @@ def investments_lots_select(
             to no more than the disposal's magnitude.
 
     Mutation surface: writes app.lot_selections. No revert tool; call again
-    with the prior selections (or `[]`) to undo.
+    with the prior selections (or `[]`) to undo. A disposal in an unreconciled
+    account (two source ledgers) is still written, but sets
+    `summary.degraded_reason` to `investment_source_overlap: ...`: a selected
+    lot may be one of a duplicated pair.
     """
     parsed = [_parse_selection(s, i) for i, s in enumerate(selections)]
     with get_database(read_only=False) as db:
-        InvestmentService(db).select_lots(disposal_txn_id, parsed, actor="mcp")
+        result = InvestmentService(db).select_lots(disposal_txn_id, parsed, actor="mcp")
     return build_envelope(
         data=InvestmentLotsSelectPayload(
             disposal_txn_id=disposal_txn_id,
@@ -585,6 +587,8 @@ def investments_lots_select(
                 for lot_id, qty in parsed
             ],
         ),
+        degraded=result.degraded_reason is not None,
+        degraded_reason=result.degraded_reason,
         actions=["Use investments(view='gains') to see the updated allocation"],
     )
 
@@ -1269,14 +1273,12 @@ def _investment_period(start: _date | None, end: _date | None) -> str | None:
 
 
 def _holdings_pointers(degraded_reason: str | None) -> list[str]:
-    """The two views a holdings answer hands off to, caveated when they lie.
+    """The two views a holdings answer hands off to, caveated when unreconciled.
 
-    ``lots`` and ``gains`` read the same interleaved ledger a source-overlap
-    holdings row was withheld for, so while that state stands both carry the
-    double-count the withhold exists to contain. Recommending them bare would
-    walk the caller off a correctly-blank figure onto an uncaveated wrong one.
-    The caveat repeats the code from ``summary.degraded_reason`` so an agent
-    reading only ``actions`` still lands on one vocabulary.
+    ``lots`` and ``gains`` read the same interleaved ledger an unreconciled
+    holding comes from, so while that state stands both carry the same
+    double-count. The caveat repeats the code from ``summary.degraded_reason``
+    so an agent reading only ``actions`` still lands on one vocabulary.
     """
     caveat = (
         f" — double-counted while {SOURCE_OVERLAP_CODE} stands"
@@ -1536,19 +1538,18 @@ def register_investment_coarse_reads(mcp: FastMCP) -> None:
         mcp,
         investments_coarse,
         "investments",
-        # 896 of the 900-character budget. "lots and gains degrade too" cost 27
-        # and was paid for by trimming four phrases whose field names already
-        # carry them, not by dropping a fact: an agent that learns only at
-        # call time which views can degrade has already chosen the wrong one,
-        # and a realized-gain figure is the last place to find that out.
+        # 896 of the 900-character budget. The unreconciled sentence names all
+        # three degrading views: an agent that learns only at call time which
+        # views can degrade has already chosen the wrong one, and a
+        # realized-gain figure is the last place to find that out.
         "Return investment events, holdings, tax lots (open or all), realized "
         "gains, or securities. Amounts use the ledger sign convention; currency "
-        "is summary.display_currency except holdings rows, which keep their "
-        "currency_code. For holdings, valuation_status is valued, "
-        "carried_forward, unpriced, withheld (wrong share count or currency), "
-        "or source_overlap (two source ledgers on one account; lots and gains "
-        "degrade too — see summary.degraded_reason); the last three null "
+        "is summary.display_currency except holdings rows (own "
+        "currency_code). Holdings valuation_status: valued, carried_forward, "
+        "unpriced, withheld (wrong share count or currency); the last two null "
         "market_value/unrealized_gain (never zero), counted in data.warnings. "
+        "reconciliation_status=unreconciled: one account, two source ledgers; "
+        "holdings, lots and gains double-count (summary.degraded_reason). "
         "Never sum market_value across rows: read data.total_market_value in "
         "data.total_market_value_currency — mixed currencies price into home at "
         "each position's close, both null with no covering rate; "

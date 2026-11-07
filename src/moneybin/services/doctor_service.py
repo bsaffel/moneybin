@@ -25,6 +25,7 @@ from moneybin.investments.source_overlap import (
     investment_source_choice_counts,
     investment_source_overlap,
     stale_source_choice_accounts,
+    unreconciled_investment_accounts,
 )
 from moneybin.metrics.registry import (
     DUPLICATE_ACCOUNT_PAIRS,
@@ -34,6 +35,7 @@ from moneybin.metrics.registry import (
     NET_WORTH_UNANCHORED_ACCOUNTS,
     NET_WORTH_UNPRICED_DATES,
     PROFILE_CURRENCIES,
+    RECONCILIATION_UNRECONCILED_ACCOUNTS,
     UNKNOWN_CURRENCY_ROWS,
 )
 from moneybin.services.account_resolution_types import is_reserved_account_name
@@ -1782,6 +1784,12 @@ class DoctorService:
                 ).set(count)
         except Exception:  # telemetry never fails a check
             logger.warning("! Could not refresh the investment source choice gauge")
+        try:
+            RECONCILIATION_UNRECONCILED_ACCOUNTS.labels(ledger="investment").set(
+                unreconciled_investment_accounts(self._db)
+            )
+        except Exception:  # telemetry never fails a check
+            logger.warning("! Could not refresh the reconciliation gauge")
         if accounts or stale:
             parts: list[str] = []
             if accounts:
@@ -1789,10 +1797,11 @@ class DoctorService:
                 parts.append(
                     f"{len(accounts)} account{'s' if many else ''} "
                     f"{'have' if many else 'has'} investment history from two "
-                    "sources (recorded and synced). Lots and gains double-count "
-                    "and holdings are withheld until you choose which history "
-                    "each account keeps: moneybin accounts set <account> "
-                    "--investment-source-type manual|plaid. Choosing deletes "
+                    "sources (recorded and synced). "
+                    f"{'Their' if many else 'Its'} holdings, lots and gains "
+                    "double-count and are marked unreconciled until you choose "
+                    "which history each account keeps: moneybin accounts set "
+                    "<account> --investment-source-type manual|plaid. Choosing deletes "
                     "nothing, and clearing the setting brings both back"
                 )
             if stale:
@@ -2182,12 +2191,12 @@ class DoctorService:
         place users go to ask "is anything wrong with my data?". A position whose
         feed key never bound simply reads blank forever.
 
-        Scoped to ``unpriced`` alone. ``withheld`` and ``source_overlap`` also
-        publish no value, but their remedies are reconciling a share count and
-        removing one of two source ledgers — not adding a price source — and
-        routing either here would send the user to fix something that was never
-        broken. ``carried_forward`` has a usable price whose age the staleness
-        surface carries.
+        Scoped to ``unpriced`` alone. ``withheld`` also publishes no value, but
+        its remedy is reconciling a share count — not adding a price source —
+        and routing it here would send the user to fix something that was never
+        broken. Mixed-source accounts publish a priced figure marked
+        unreconciled. ``carried_forward`` has a usable price whose age the
+        staleness surface carries.
 
         Reported per security rather than per position: the remedy — bind a feed
         key or record a mark — applies to the security, so one holding in three
@@ -2239,10 +2248,9 @@ class DoctorService:
         so that reporting an age is not mistaken for judging one.
 
         Scoped to ``carried_forward``. ``valued`` means the close is dated today
-        and can never be stale; ``unpriced``, ``withheld`` and ``source_overlap``
-        publish no value, and their remedies — a price source, a reconciled
-        share count, one fewer source ledger — are owned
-        by their own checks.
+        and can never be stale; ``unpriced`` and ``withheld`` publish no
+        value, and their remedies — a price source, a reconciled share count —
+        are owned by their own checks.
 
         The threshold resolves per security type rather than globally: markets
         close ~114 days a year, so an equity threshold tight enough to catch a

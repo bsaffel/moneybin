@@ -779,6 +779,14 @@ INVESTMENT_SOURCE_CHOICE_ACCOUNTS = Gauge(
     ["investment_source_type"],
 )
 
+RECONCILIATION_UNRECONCILED_ACCOUNTS = Gauge(
+    "moneybin_reconciliation_unreconciled_accounts",
+    "Accounts whose derived figures are unreconciled, by ledger (investment; "
+    "cash reserved for MB-89), refreshed when the investment_source_overlap "
+    "doctor check runs.",
+    ["ledger"],
+)
+
 SECURITY_RESOLUTION_OUTCOMES_TOTAL = Counter(
     "moneybin_security_resolution_outcomes_total",
     "Security-reference resolution outcomes by winning rung: cusip | isin | "
@@ -1035,7 +1043,7 @@ PRICE_RESOLUTION_STATUS_TOTAL = Counter(
     # securities. Recorded per full holdings read, so read it as a ratio between
     # statuses over a window, not as an absolute count of positions.
     "Holdings valuation outcomes by status (valued / carried_forward / "
-    "unpriced / unreconstructable / withheld / source_overlap)",
+    "unpriced / unreconstructable / withheld)",
     ["status"],
 )
 
@@ -1379,6 +1387,7 @@ METRIC_DOMAINS: dict[str, str] = {
     # Investments
     "moneybin_investment_events_recorded": "Investments",
     "moneybin_investment_source_choice_accounts": "Investments",
+    "moneybin_reconciliation_unreconciled_accounts": "Investments",
     "moneybin_security_resolution_outcomes": "Investments",
     # MCP server
     "moneybin_mcp_tool_calls": "MCP server",

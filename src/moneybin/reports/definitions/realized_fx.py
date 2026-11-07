@@ -48,6 +48,7 @@ from moneybin.tables import REPORTS_REALIZED_FX
         "to_source_origin": DataClass.TXN_TYPE,
         "coverage_status": DataClass.TXN_TYPE,
         "coverage_reason": DataClass.TXN_TYPE,
+        "reconciliation_status": DataClass.TXN_TYPE,
         "acquisition_date": DataClass.TXN_DATE,
         "disposal_date": DataClass.TXN_DATE,
         "valuation_rate_date": DataClass.TXN_DATE,
@@ -174,6 +175,12 @@ from moneybin.tables import REPORTS_REALIZED_FX
         OutputColumn(
             "coverage_reason",
             "Closed reason when accounting coverage is incomplete.",
+            DataClass.TXN_TYPE,
+        ),
+        OutputColumn(
+            "reconciliation_status",
+            "reconciled or unreconciled; unreconciled rows double-count until one "
+            "investment source is chosen for the account.",
             DataClass.TXN_TYPE,
         ),
         OutputColumn(
@@ -326,7 +333,8 @@ def realized_fx(
                from_currency, to_currency, source_shape, acquisition_type,
                cost_basis_method, valuation_source_type, from_source_type,
                from_source_origin, to_source_type, to_source_origin,
-               coverage_status, coverage_reason, acquisition_date, disposal_date,
+               coverage_status, coverage_reason, reconciliation_status,
+               acquisition_date, disposal_date,
                valuation_rate_date, executed_rate, valuation_rate, updated_at,
                disposed_amount, proceeds, cost_basis, fee_amount, gain_loss
         FROM {REPORTS_REALIZED_FX.full_name}
