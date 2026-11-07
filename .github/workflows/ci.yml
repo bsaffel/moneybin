@@ -152,8 +152,10 @@ jobs:
           restore-keys: ci-test-durations-v1-
 
       # pytest-split shards the unit suite across the matrix so wall-clock
-      # scales with the number of free standard runners. strategy.job-total is
-      # the matrix size, so --splits stays in lockstep with the `group` array.
+      # scales with the number of free standard runners. least_duration balances
+      # measured runtimes; new cases participate using average duration estimates.
+      # Keep xdist's loadscope grouping for fixture reuse within each shard.
+      # strategy.job-total keeps --splits in lockstep with the `group` array.
       # Each suite/shard writes its own coverage data file; the `coverage` job
       # below combines unit, integration, and E2E execution into one report.
       - name: Test
@@ -165,6 +167,7 @@ jobs:
         run: |
           uv run pytest tests/ -m unit -v -n logical \
             --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
+            --splitting-algorithm least_duration \
             --cov=src --cov-report= --cov-fail-under=0 --durations=25
 
       - name: Upload coverage data
@@ -275,16 +278,9 @@ jobs:
           key: ci-test-durations-v1-${{ github.run_id }}
           restore-keys: ci-test-durations-v1-
 
-      # Shard the integration suite with pytest-split, same pattern as test-unit
-      # and test-e2e. This was the workflow's critical path at ~12.5 min — more
-      # than double any other job — so it, not Scenarios, set overall PR time.
-      # 4-way brings it under the ~5 min Scenarios floor.
-      #
-      # One integration shard can still run long when its loadscope group is
-      # dominated by an expensive module. Combined with
-      # --dist=loadscope pinning a module to one worker, a shard that lands
-      # dominated by one expensive module (test_demo_service.py,
-      # test_stg_plaid_investments.py) can't parallelize out of it.
+      # Match unit sharding: spread expensive cases across runners while
+      # retaining loadscope fixture reuse within each runner. Contiguous chunks
+      # previously concentrated new database lifecycle cases on one shard.
       - name: Test
         env:
           COVERAGE_FILE: .coverage.integration.${{ matrix.group }}
@@ -294,6 +290,7 @@ jobs:
         run: |
           uv run pytest tests/ -m integration -v -n logical \
             --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
+            --splitting-algorithm least_duration \
             --cov=src --cov-report= --cov-fail-under=0 --durations=25
 
       - name: Upload coverage data
