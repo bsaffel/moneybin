@@ -332,6 +332,18 @@ not extend here); revisit together if Plaid ships a sync-style investments
 endpoint (its update webhook already reports canceled investment transactions),
 or if real drift shows up in reconciliation.
 
+[Plaid documents cancellation transactions and webhook counts](https://plaid.com/docs/api/products/investments/),
+but their frequency in MoneyBin feeds is unmeasured. Generic reversal machinery
+remains deferred until actual source evidence establishes the relationship
+contract. Revisit this gap when cancellation rows or webhook counts accompany
+an original trade that remains in the ledger, reconciliation exposes
+unexplained lots or proceeds, or a supported source supplies a usable link to
+the original transaction. Preserve exact Raw evidence and validate that
+relationship before changing the ledger; similarity alone cannot establish a
+reversal. The legacy `cancel_transaction_id` field is deprecated in
+[Plaid's OpenAPI schema](https://github.com/plaid/plaid-openapi/blob/master/2020-09-14.yml)
+and cannot supply that contract.
+
 ---
 
 ## Data model
