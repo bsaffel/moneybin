@@ -80,6 +80,7 @@ def _rebuild(db: Database) -> None:
 
 def _order_comparison_inputs(db: Database, reverse: bool) -> None:
     """Keep production comparison SQL, presenting its rows in opposite orders."""
+    models = Path(__file__).resolve().parents[3] / "src/moneybin/sqlmesh/models/prep"
     direction = "DESC" if reverse else "ASC"
     for name, columns in (
         ("int_investment_events__headers", ("source_event_key",)),
@@ -92,7 +93,7 @@ def _order_comparison_inputs(db: Database, reverse: bool) -> None:
             ("left_source_event_key", "right_source_event_key"),
         ),
     ):
-        path = Path("src/moneybin/sqlmesh/models/prep") / f"{name}.sql"
+        path = models / f"{name}.sql"
         query = next(
             node
             for node in parse(path.read_text(), default_dialect="duckdb")
