@@ -422,6 +422,38 @@ def test_chained_currency_transfer_retains_unsupported_coverage() -> None:
     assert final_lot.cost_basis_remaining is None
 
 
+def test_transferred_lot_is_reconciled_even_from_an_unreconciled_sale() -> None:
+    """Spec D11: a Transfer opens the destination lot, so the sale's flag stays behind."""
+    disposal = _conversion(
+        conversion_id="fxc_destination_disposal",
+        from_account_id="acct-eur-2",
+        to_account_id="acct-usd",
+        from_date=date(2026, 3, 1),
+        to_date=date(2026, 3, 1),
+        from_amount=D("20.00"),
+        from_currency="EUR",
+        to_amount=D("30.00"),
+        to_currency="USD",
+        home_value=D("30.00"),
+        updated_at=T3,
+    )
+
+    result = _derive(
+        disposal,
+        sales=(_sale(reconciliation_status="unreconciled"),),
+        transfers=(
+            _transfer(source_date=date(2026, 2, 2), destination_date=date(2026, 2, 2)),
+        ),
+    )
+
+    origin = next(lot for lot in result.lots if lot.account_id == "acct-eur")
+    transferred = next(lot for lot in result.lots if lot.account_id == "acct-eur-2")
+    assert origin.reconciliation_status == "unreconciled"
+    assert transferred.acquisition_type == "transfer"
+    assert transferred.reconciliation_status == "reconciled"
+    assert [g.reconciliation_status for g in result.gains] == ["reconciled"]
+
+
 def test_transferred_lot_freshness_includes_corrected_origin() -> None:
     result = _derive(
         _conversion(updated_at=T5),

@@ -12,7 +12,7 @@
    exceed a lot's own total.
 
    Market value is WITHHELD (status 'withheld') whenever the share COUNT is known wrong
-   — a broker snapshot contradicting the ledger, an unreconciled split, or a fresh
+   — a broker snapshot contradicting the ledger, an unrecorded split, or a fresh
    snapshot omitting a position the ledger still carries. A withheld row publishes NO
    pricing at all: market_value, unrealized_gain, price_date, price_source, and
    days_since_observed are ALL NULL, even when a fresh close did resolve. Leaving the
@@ -431,7 +431,7 @@ SELECT
     )
     THEN 'valued'
     ELSE 'carried_forward'
-  END AS valuation_status, /* valued | carried_forward | unpriced | withheld. Every status either carries a number the reader can rely on or carries none at all. The non-valued statuses stay distinct because each has a different remedy: unpriced wants a price feed; withheld wants the share count reconciled — an unreconciled split recorded, a broker divergence resolved, or a position the broker no longer reports closed out. Whether the account's ledger mixes two sources is a separate marker: see reconciliation_status */
+  END AS valuation_status, /* valued | carried_forward | unpriced | withheld. Every status either carries a number the reader can rely on or carries none at all. The non-valued statuses stay distinct because each has a different remedy: unpriced wants a price feed; withheld wants the share count reconciled — an unrecorded split recorded, a broker divergence resolved, or a position the broker no longer reports closed out. Whether the account's ledger mixes two sources is a separate marker: see reconciliation_status */
   p.reconciliation_status, /* reconciled | unreconciled. unreconciled when the position's account carries an investment ledger from more than one source (read from the lots); the figures on this row still publish, so read them with that caveat. Independent of valuation_status: a position can be both withheld and unreconciled. Remedy: choose one source for the account (accounts set --investment-source-type) */
   p.currency_code, /* Denominating currency (one per position) */
   p.quantity, /* Total open units (Σ remaining_quantity); cast back to (28,10) — SUM widens to (38,10) */

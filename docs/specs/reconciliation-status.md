@@ -1,6 +1,6 @@
 # Reconciliation Status
 
-> Last updated: 2026-11-03
+> Last updated: 2026-11-07
 > Status: implemented
 > Address: M1J.9 (Investments — reconciliation status on derived investment figures)
 > Type: Feature
@@ -145,12 +145,14 @@ single-copy event in an overlapping account is wrong. The
 investment-event-matching spec keeps its guard account-level for the same
 reason.
 
+The two existing copies of the predicate are deleted and replaced by reads of
+the column. The doctor's Raw-level detection answers a different question,
+since it must fire before any transform, and stays separate.
+
 As shipped, one `account_reconciliation` CTE over the filtered ledger computes
 the status and the account's newest row timestamp (D6) once per account, and
 every row joins it with `IS NOT DISTINCT FROM`, so a ledger row whose
-`account_id` is NULL keeps a status rather than dropping out. The two existing
-copies of the predicate are deleted and replaced by reads of the column. The doctor's Raw-level detection answers a different question, since
-it must fire before any transform, and stays separate.
+`account_id` is NULL keeps a status rather than dropping out.
 
 ### D2. Derived models inherit the marker and publish their figures
 
@@ -162,6 +164,11 @@ In `prep` and `core` the column takes Rule A's string block
 (`.claude/rules/column-ordering.md`), placed immediately before
 `currency_code`, with no other column moving. `core.dim_holdings` reads it from
 the position's open lots: `unreconciled` when any of them is.
+
+The user-facing `reports.realized_fx` view (`core:realized_fx`) projects
+`core.fct_realized_fx_gains.reconciliation_status` among its dimensions, after
+`coverage_reason`, classified `TXN_TYPE`, so the FX report never publishes an
+unmarked doubled gain.
 
 ### D3. #541's holdings blanking is removed
 
@@ -271,10 +278,10 @@ One gauge, `moneybin_reconciliation_unreconciled_accounts`, labelled by `ledger`
 (`investment` now, `cash` reserved for MB-89). It is refreshed when the
 `investment_source_overlap` doctor check runs, beside
 `INVESTMENT_SOURCE_CHOICE_ACCOUNTS`, from
-`unreconciled_investment_accounts(db)` in `investments/source_overlap.py`, which
-counts distinct accounts with `unreconciled` ledger rows. A failure to refresh
-it is logged and does not change the check's result. `PRICE_RESOLUTION_STATUS_TOTAL` drops its
-`source_overlap` label (D3).
+`unreconciled_investment_accounts(db)` in `investments/source_overlap.py`,
+which counts distinct accounts with `unreconciled` ledger rows. A failure to
+refresh it is logged and does not change the check's result.
+`PRICE_RESOLUTION_STATUS_TOTAL` drops its `source_overlap` label (D3).
 
 ### D10. The cash contract, recorded now, built under MB-89
 
@@ -285,14 +292,14 @@ model: the figure stays published and the row is marked.
 
 ### D11. Scope and inheritance details
 
-- **Rows with no investment parent.** A currency lot opened by a cash conversion
-  or a Transfer, and an FX gain consuming only such lots, is `reconciled`. A
-  currency lot's status is that of the investment
-  event that opened it. A lot a Transfer moved into another account is
-  `reconciled` even when it descends from an unreconciled sale: the transferred
-  lot is opened by the Transfer, not by the sale. An FX gain is `unreconciled`
-  when the lot it consumes is; an FX gain with no consumed lot (an incomplete
-  disposal) is `reconciled`.
+- **Rows with no investment parent.** A currency lot opened by a cash
+  conversion or a Transfer, and an FX gain consuming only such lots, is
+  `reconciled`. A currency lot's status is that of the investment event that
+  opened it. A lot a Transfer moved into another account is `reconciled` even
+  when it descends from an unreconciled sale: the transferred lot is opened by
+  the Transfer, not by the sale. An FX gain is `unreconciled` when the lot it
+  consumes is; an FX gain with no consumed lot (an incomplete disposal) is
+  `reconciled`.
 - **FX `coverage_status`.** `fct_realized_fx_gains.coverage_status`
   (`complete` / `incomplete`) describes missing records. `reconciliation_status`
   describes doubled records. Both columns are kept, because the remedies differ.
@@ -315,6 +322,7 @@ model: the figure stays published and the row is marked.
 | `core.dim_holdings` | Figures no longer blanked for overlap; `valuation_status` loses `source_overlap` |
 | CLI `investments holdings / lots / gains`, MCP `investments` | Rows carry the status; unreconciled rows and totals are marked and warned |
 | CLI `investments lots select`, MCP `investments_lots_select` | Warns for unreconciled accounts |
+| Report `core:realized_fx` (`reports.realized_fx`) | New `reconciliation_status` column |
 | Bundle export | Manifest reports unreconciled row counts per table |
 | `system doctor` | Unchanged |
 | Web | No web surface exists today; none added |

@@ -63,7 +63,7 @@ from moneybin.metrics.registry import set_fx_accounting_rows
         "account_id": "Account holding the disposed Currency",
         "conversion_id": "Conversion that disposed the Currency",
         "currency_lot_id": "Consumed Currency lot; NULL for unmatched inventory",
-        "reconciliation_status": "reconciled | unreconciled; unreconciled when the consumed lot opens rests on an account whose investment history mixes source types",
+        "reconciliation_status": "reconciled | unreconciled; inherited from the consumed lot, so unreconciled only when a security sale in an unreconciled account opened it, never when a Transfer did",
         "currency_code": "Currency disposed",
         "home_currency": "Profile Home currency used for valuation",
         "acquisition_date": "Date the consumed Currency was acquired",

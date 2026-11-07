@@ -365,7 +365,8 @@ render `-`: `unpriced` (no close resolved) and `withheld` (a known-wrong share
 count), whose remedies are a price refresh and a position fix.
 `InvestmentService.holdings` warns by telling the reader to see each row's
 `valuation_status`, so a default view without it names something not on screen
-— and that warning is a `render_note`, which `-q` drops.
+— and that warning prints among the disclosures beneath the table, which `-q`
+keeps.
 
 A `reconciliation` column joins the default set only when a row is
 unreconciled (`with_reconciliation_column`): that row's figures print but

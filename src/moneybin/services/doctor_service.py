@@ -1797,11 +1797,11 @@ class DoctorService:
                 parts.append(
                     f"{len(accounts)} account{'s' if many else ''} "
                     f"{'have' if many else 'has'} investment history from two "
-                    "sources (recorded and synced). Lots and gains double-count; "
-                    "holdings, lots and gains are marked unreconciled until "
-                    "you choose which history "
-                    "each account keeps: moneybin accounts set <account> "
-                    "--investment-source-type manual|plaid. Choosing deletes "
+                    "sources (recorded and synced). "
+                    f"{'Their' if many else 'Its'} holdings, lots and gains "
+                    "double-count and are marked unreconciled until you choose "
+                    "which history each account keeps: moneybin accounts set "
+                    "<account> --investment-source-type manual|plaid. Choosing deletes "
                     "nothing, and clearing the setting brings both back"
                 )
             if stale:
@@ -2194,8 +2194,9 @@ class DoctorService:
         Scoped to ``unpriced`` alone. ``withheld`` also publishes no value, but
         its remedy is reconciling a share count — not adding a price source —
         and routing it here would send the user to fix something that was never
-        broken. Mixed-source accounts publish a priced figure marked unreconciled. ``carried_forward`` has a usable price whose age the staleness
-        surface carries.
+        broken. Mixed-source accounts publish a priced figure marked
+        unreconciled. ``carried_forward`` has a usable price whose age the
+        staleness surface carries.
 
         Reported per security rather than per position: the remedy — bind a feed
         key or record a mark — applies to the security, so one holding in three

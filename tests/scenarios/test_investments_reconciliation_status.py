@@ -260,6 +260,8 @@ def test_reconciliation_status_discloses_and_clears_end_to_end() -> None:
         assert _count(db, "core.fct_realized_gains", ACCOUNT) == 2
         # Disclosure, not withholding: the doubled position still publishes.
         assert _chc_market_value(db) == Decimal("1920.00")
+        # The user-facing FX report carries the marker its core model does.
+        assert _statuses(db, "reports.realized_fx", ACCOUNT) == {"unreconciled"}
 
         service = InvestmentService(db)
         reads = {
@@ -300,6 +302,7 @@ def test_reconciliation_status_discloses_and_clears_end_to_end() -> None:
             assert _count(db, table, ACCOUNT) >= 1, f"{table} lost its rows"
             assert _statuses(db, table, ACCOUNT) == {"reconciled"}, table
         assert _count(db, "core.fct_investment_transactions", ACCOUNT) == 4
+        assert _statuses(db, "reports.realized_fx", ACCOUNT) == {"reconciled"}
         assert _chc_market_value(db) == Decimal("720.00")
 
         service = InvestmentService(db)

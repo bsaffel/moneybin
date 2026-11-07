@@ -59,7 +59,7 @@ from moneybin.metrics.registry import set_fx_accounting_rows
     column_descriptions={
         "currency_lot_id": "Stable content hash of the Currency acquisition",
         "account_id": "Account holding the Currency lot",
-        "reconciliation_status": "reconciled | unreconciled; unreconciled when the lot opens rests on an account whose investment history mixes source types",
+        "reconciliation_status": "reconciled | unreconciled; inherited from the account of the security sale that opened the lot, and always reconciled for a lot a Transfer opened",
         "currency_code": "Currency held by this lot",
         "acquisition_date": "Date the Currency was acquired",
         "acquisition_type": "conversion | security_sale | transfer",

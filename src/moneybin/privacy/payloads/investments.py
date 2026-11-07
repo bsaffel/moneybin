@@ -167,8 +167,8 @@ class InvestmentHoldingRow:
     (a held "stock" figure, like ``cost_basis``); ``price_date``/
     ``days_since_observed`` are TIMESTAMP_OBSERVABILITY (a public close's date,
     and a value bijective with it); ``price_source``/``valuation_status``/
-    ``reconciliation_status`` are TXN_TYPE (routing tags). None of them raises the payload's derived tier —
-    ``cost_basis`` already carries BALANCE.
+    ``reconciliation_status`` are TXN_TYPE (routing tags). None of them raises
+    the payload's derived tier — ``cost_basis`` already carries BALANCE.
     """
 
     account_id: Annotated[str, DataClass.RECORD_ID]

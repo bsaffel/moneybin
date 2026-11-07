@@ -7037,7 +7037,8 @@ def test_overlap_check_sets_reconciliation_gauge_and_marks_unreconciled(
         == 1.0
     )
     detail = result.detail or ""
-    assert "holdings, lots and gains are marked unreconciled" in detail
+    assert "holdings, lots and gains double-count and are marked unreconciled" in detail
+    assert detail.count("double-count") == 1
     assert "withheld" not in detail
 
 
