@@ -1387,6 +1387,7 @@ METRIC_DOMAINS: dict[str, str] = {
     # Investments
     "moneybin_investment_events_recorded": "Investments",
     "moneybin_investment_source_choice_accounts": "Investments",
+    "moneybin_reconciliation_unreconciled_accounts": "Investments",
     "moneybin_security_resolution_outcomes": "Investments",
     # MCP server
     "moneybin_mcp_tool_calls": "MCP server",
