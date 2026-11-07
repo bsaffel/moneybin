@@ -103,7 +103,7 @@ def _order_comparison_inputs(db: Database, reverse: bool) -> None:
         db.execute(
             f"CREATE OR REPLACE VIEW prep.{name} AS "  # noqa: S608  # fixed model names and parsed production SQL
             f"SELECT * FROM ({query.sql(dialect='duckdb')}) AS inputs ORDER BY {ordering}"
-        )  # fixed local model names/columns and the unchanged production query
+        )
 
 
 def _revision(row: dict[str, Any]) -> tuple[Any, ...]:
