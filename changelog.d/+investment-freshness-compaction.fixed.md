@@ -1,0 +1,1 @@
+Keep investment data and exports marked stale after a failed refresh, even when SQLMesh compacts its interval history. Freshness now uses physical execution evidence rather than the time interval metadata was rewritten.

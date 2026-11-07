@@ -1,5 +1,6 @@
 """Tests for SecretStore — centralized secret management."""
 
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -113,6 +114,30 @@ class TestSetAndDeleteKey:
         mock_kr.set_password.assert_called_once_with(
             "moneybin-alice", "DATABASE__ENCRYPTION_KEY", "new-key-value"
         )
+
+    @pytest.mark.parametrize("operation", ["store", "remove"])
+    def test_keychain_operations_do_not_log_secret_names_or_values(
+        self, caplog: pytest.LogCaptureFixture, operation: str
+    ) -> None:
+        name = "synthetic:private_lookup_name"
+        value = "synthetic-private-value"
+        store = SecretStore(profile="alice")
+        with (
+            patch("moneybin.secrets.keyring"),
+            caplog.at_level(logging.DEBUG, logger="moneybin.secrets"),
+        ):
+            if operation == "store":
+                store.set_key(name, value)
+            else:
+                store.delete_key(name)
+
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "moneybin.secrets"
+        ]
+        assert messages
+        assert all(name not in message and value not in message for message in messages)
 
     def test_delete_key_clears_from_keychain(self) -> None:
         store = SecretStore(profile="alice")
