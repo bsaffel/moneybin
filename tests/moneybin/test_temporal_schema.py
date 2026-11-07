@@ -118,7 +118,8 @@ def test_freshness_epoch_milliseconds_remain_absolute(
     )
     db.execute(
         "CREATE TABLE sqlmesh._intervals "
-        "(name VARCHAR, version VARCHAR, created_ts BIGINT, last_altered_ts BIGINT, is_dev BOOLEAN, "
+        "(name VARCHAR, version VARCHAR, created_ts BIGINT, last_altered_ts BIGINT, "
+        "is_dev BOOLEAN, "
         "is_removed BOOLEAN, is_pending_restatement BOOLEAN)"
     )
     db.execute(

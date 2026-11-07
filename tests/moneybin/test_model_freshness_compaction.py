@@ -32,7 +32,10 @@ def interval_state(db: Database) -> Database:
 
 
 def _execution(db: Database) -> datetime | None:
-    source = Path("src/moneybin/sqlmesh/models/meta/model_freshness.sql").read_text()
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src/moneybin/sqlmesh/models/meta/model_freshness.sql"
+    ).read_text()
     query = parse(source, default_dialect="duckdb")[-1]
     assert query is not None
     row = db.execute(query.sql(dialect="duckdb")).fetchone()
