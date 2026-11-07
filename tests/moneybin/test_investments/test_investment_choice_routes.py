@@ -15,6 +15,9 @@ from moneybin.connectors.sync_models import SyncInvestmentTransaction
 from moneybin.database import Database
 from moneybin.extractors.plaid.extractor import PlaidExtractor
 from moneybin.mcp.tools.reviews import register_review_coarse_writes
+from moneybin.repositories.investment_event_members_repo import (
+    InvestmentEventMembersRepo,
+)
 from moneybin.services.investment_matching_service import InvestmentMatchingService
 from moneybin.services.investment_membership_service import InvestmentMembershipService
 from moneybin.services.transform_service import TransformService
@@ -55,6 +58,34 @@ def _conflicting_dividend(db: Database) -> InvestmentMatchingService:
     service = InvestmentMatchingService(db)
     service.run()
     assert len(service.pending()) == 1
+    return service
+
+
+def _incoherent_buy(db: Database) -> InvestmentMatchingService:
+    seed_manual_event(db, "manual")
+    row = SyncInvestmentTransaction(
+        investment_transaction_id="native",
+        account_id="native_account",
+        provider_item_id="origin",
+        security_id="native_security",
+        date=date(2026, 1, 10),
+        name="Synthetic rounded buy",
+        quantity=Decimal("0.999999"),
+        amount=Decimal("100.01"),
+        price=None,
+        fees=Decimal("0"),
+        type="buy",
+        subtype="buy",
+    )
+    at = datetime(2026, 2, 1, tzinfo=UTC)
+    PlaidExtractor(db)._load_investment_transactions(  # pyright: ignore[reportPrivateUsage]  # retained synthetic observation
+        [row], "sync_incoherent", at, at
+    )
+    install_comparison_models(db)
+    service = InvestmentMatchingService(db)
+    service.run()
+    (proposal,) = service.pending()
+    assert {c["field"] for c in proposal["field_choices"]} == {"quantity", "amount"}
     return service
 
 
@@ -100,6 +131,7 @@ def _revise_dividend(db: Database) -> None:
     "selection",
     [
         "missing",
+        "incoherent",
         "duplicate",
         "unknown_conflict",
         "unknown_choice",
@@ -113,7 +145,11 @@ async def test_acceptance_choice_validation_matches_across_routes_without_writes
     surface: str,
     selection: str,
 ) -> None:
-    service = _conflicting_dividend(comparison_db)
+    service = (
+        _incoherent_buy(comparison_db)
+        if selection == "incoherent"
+        else _conflicting_dividend(comparison_db)
+    )
     InvestmentMembershipService(comparison_db).reconcile(actor="test")
     proposal = service.pending()[0]
     choices = _choices(proposal)
@@ -134,6 +170,7 @@ async def test_acceptance_choice_validation_matches_across_routes_without_writes
 
     use_decision_database(monkeypatch, comparison_db)
     pending_before, history_before = service.pending(), service.history()
+    members_before = InvestmentEventMembersRepo(comparison_db).history()
     audit_before = comparison_db.execute(
         f"SELECT * FROM {AUDIT_LOG.full_name}"  # noqa: S608  # fixed TableRef
     ).fetchall()
@@ -164,7 +201,11 @@ async def test_acceptance_choice_validation_matches_across_routes_without_writes
             error = json.loads(result.stdout)["error"]
             assert error["code"] == "mutation_invalid_input"
             message = error["details"]["errors"][0]["reason"].lower()
-            assert "investment field conflict" in message
+            assert (
+                "valid complete event"
+                if selection == "incoherent"
+                else "investment field conflict"
+            ) in message
     else:
         result = await call_tool_raw(
             isolated_server(register_review_coarse_writes),
@@ -187,10 +228,15 @@ async def test_acceptance_choice_validation_matches_across_routes_without_writes
             error = result.structured_content["error"]
             assert error["code"] == "mutation_invalid_input"
             message = error["details"]["errors"][0]["reason"].lower()
-            assert "investment field conflict" in message
+            assert (
+                "valid complete event"
+                if selection == "incoherent"
+                else "investment field conflict"
+            ) in message
 
     assert service.pending() == pending_before
     assert service.history() == history_before
+    assert InvestmentEventMembersRepo(comparison_db).history() == members_before
     assert (
         comparison_db.execute(
             f"SELECT * FROM {AUDIT_LOG.full_name}"  # noqa: S608  # fixed TableRef

@@ -1,7 +1,7 @@
 # Investment Event Matching
 
-> Last updated: 2026-09-13
-> Status: in-progress
+> Last updated: 2026-11-07
+> Status: implemented
 > Address: M1J.7 (Investments — cross-source event matching)
 > Type: Feature
 > Owns: source-neutral matching of whole investment events, review decisions,
@@ -1324,9 +1324,10 @@ When manual and aggregator investment histories coexist for one Account,
 SyncService warns and system doctor reports the overlap. The account-level
 guard is `reconciliation_status`
 ([`reconciliation-status.md`](reconciliation-status.md)), which replaced the
-holdings withholding shipped in #541: every derived row of the account is
-marked `unreconciled`, keeps its figures, and every read warns with the remedy.
-The predicate keeps #541's opening-bootstrap exclusion. Slice #526 expands the
+holdings withholding shipped in #541. When the projected ledger retains
+multiple source types, excluding opening-bootstrap rows, every derived row of
+the account is marked `unreconciled`, keeps its figures, and every read warns
+with the remedy. Slice #526 expands the
 warning and doctor evidence to include Plaid holdings/bootstrap observations
 as well as transaction observations. Detection and the marker have distinct
 predicates: broader detection does not broaden the marker. M1J.7
@@ -1341,7 +1342,10 @@ remaining row is safe.
 Replacing or narrowing the visible-collision guard is a separate promotion
 decision after real-data evidence. It must define the exact state and read
 semantics and prove which unmatched rows can be trusted without double-counting.
-Accepting one investment Match does not clear the account's `unreconciled` marker.
+Accepting a Match can clear the Core marker when only one representative source
+type remains in the projected ledger. It does not disable the independent Raw
+overlap detection, which remains active until a Source Choice settles the
+account's overlap.
 
 Automatic acceptance is also a separate promotion. The first release may
 record which Proposals would have been auto-eligible so first-decision review
@@ -1379,6 +1383,28 @@ Logs may include counts, opaque event ids, status codes, and operation names.
 They must not include event types, descriptions, security names, monetary values,
 quantities, account labels, or source payloads.
 
+## Implementation acceptance and field validation
+
+The review-first implementation is accepted on deterministic synthetic scenario
+and lifecycle evidence, including exact Golden-ledger and downstream financial
+outputs. Representative labeled real-history validation is a separate field
+acceptance task. Insufficient real history leaves that task blocked on data;
+it does not prevent completion of the implementation scope or count as a
+validation pass. Constructed histories remain synthetic evidence.
+
+The visible-collision guard and mandatory human confirmation remain active.
+Narrowing that guard or enabling automatic acceptance still requires the
+approved real-data evidence and a separate promotion decision. Implementation
+completion establishes neither real-world precision nor zero false
+consolidations on real histories.
+
+Generic source-level cancellation/reversal machinery is deferred until actual
+source evidence establishes a usable original-event relationship contract.
+Audited reversal of a human investment-Match decision remains part of the
+implementation scope. Cancellation revisit triggers and the current ingestion
+limitation are recorded in
+[Plaid Investments sync](sync-plaid-investments.md#no-removals-or-cancels-in-v1-documented-limitation).
+
 ## Scenario matrix
 
 The implementation is not accepted until the following cases have explicit
@@ -1394,7 +1420,7 @@ fixtures and expected Golden-ledger outcomes.
 | Source diversity | A manual-to-Plaid or other distinct-origin Proposal may be eligible; two manual/user events or two events from one Plaid connection never consolidate through this review matcher, while multiple legs already validated inside one Source event remain atomic |
 | Repetition | Two-to-two same-day trades with non-arbitrary distinguishing evidence produce a unique global assignment; genuinely indistinguishable two-to-two and one-to-two assignments remain competing pending Proposals under the canonical connected-component derivation; coverage wins before confidence, so a feasible three-event fuzzy Proposal outranks a Native pair plus one standalone, while equal-coverage quality prefers two exact pairs over one Native and one fuzzy pair; distinct assignments attaining the same maximal objective vector remain competing without an identifier or row-order tie-break, while equal lower-scoring vectors beneath one unique maximum do not create competition; an N-way Proposal takes its weakest pairwise band; rejecting exact relationship A-C in an A-B/A-C competition excludes A-C and every larger Proposal whose induced A-C relationship fingerprint is unchanged, including A-B-C, so replanning may make A-B unique, while rejecting A-B-C does not reject any internal pair; the unchanged rejection stays effective if an unrelated alternative changes and changed revisions, dependencies, evidence, or algorithm version may produce a reviewable relationship; undoing the rejection restores the assignment space and stales affected pending Proposals; three otherwise-identical events whose endpoint dates exceed the applicable band cannot form one N-way Proposal through a chain of individually eligible neighbor edges; a new equally plausible event arriving after planning changes the connected candidate graph and stales the old Proposal before acceptance; an active accepted A-B Match is one locked component, so later A-C and B-D candidates cannot split it for coverage, while any A-B-C replacement lists and visibly supersedes the complete prior Match and atomically preserves or remaps its curation |
 | Partial history | Non-overlapping manual and aggregator periods remain present after a later guard-promotion decision |
-| Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; when a correction splits a Source event held by a stale accepted Match, its reconstructed current events may support replacement planning but remain reserved from standalone projection, so old and new revisions never project together; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; after evidence or identity changes, replacement or reversal atomically releases reservations and installs current successor membership or blocks rather than restoring obsolete rows; reversal remains available when event shape or semantic correspondence changed by minting new standalone ids where required, leaving the retired combined Match id terminal rather than ambiguously forwarding it; manual correction is unavailable in M1J.7 |
+| Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; when a correction splits a Source event held by a stale accepted Match, its reconstructed current events may support replacement planning but remain reserved from standalone projection, so old and new revisions never project together; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; generic source-level cancellation/reversal validation is deferred until actual source evidence establishes its relationship contract; after evidence or identity changes, replacement or reversal atomically releases reservations and installs current successor membership or blocks rather than restoring obsolete rows; reversal remains available when event shape or semantic correspondence changed by minting new standalone ids where required, leaving the retired combined Match id terminal rather than ambiguously forwarding it; manual correction is unavailable in M1J.7 |
 | Revisions | Identical aggregator re-delivery reuses a version and per-job receipt while preserving its first-ingestion sequence; A→B→A content reuses the immutable A revision but a new receipt makes A current while retaining B in history, including when two jobs share an extraction timestamp; a changed observation version with unchanged stable native identities, unique partner, and semantic roles preserves the Source-event key and Golden ids while updating exact membership provenance, but a changed Native reference does not; a revision that loses uniqueness, becomes incomplete, or changes partner retires the affected prior membership and normally registers the rebuilt singleton or pair without reusing a changed semantic-leg id; changed accepted or multi-source evidence stales without silently changing Golden fields |
 | Opening lots | The retained first holdings snapshot is chosen independently for each `(source_account_key, source_origin)` by `(extracted_at ASC, ingestion_sequence ASC)`, so two pulls with the same extraction timestamp cannot rotate `first_snapshot_source_file` and an account first appearing in a later pull is not joined to an earlier file that lacks it; a reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a correction to an accepted Match leaves gap quantity and basis on its last-reviewed transaction revisions until replacement acceptance or reversal; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
 | Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; only a complete validated supported legacy reinvest becomes an atomic comparison event; every other shared legacy group remains separately projected and wholly match-ineligible with unchanged Raw and group provenance; a lone unused hint remains a normal singleton |
@@ -1714,9 +1740,10 @@ accepted contract and must be reconciled to it before delivery begins.
    equivalence merges follow the canonical alias path, and make a
    non-equivalent rebind, unlink, or split invalidate affected pending and
    accepted or multi-source Matches before publishing the new mapping.
-5. **Lifecycle proof.** Complete the scenario matrix, repeated-sync and failure
-   recovery tests, labeled real-data validation, and evidence for a later
-   guard-promotion decision.
+5. **Lifecycle proof.** Complete the synthetic scenario matrix, repeated-sync
+   and failure recovery tests for review-first implementation acceptance.
+   Track labeled real-history validation separately; it remains required for a
+   later guard or auto-accept promotion decision.
 
 ## Deferred decisions
 
