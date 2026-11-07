@@ -32,6 +32,7 @@ SELECT
   c.to_source_origin, /* Received-leg Source origin */
   g.coverage_status, /* complete or incomplete accounting coverage */
   g.coverage_reason, /* Closed reason when accounting coverage is incomplete */
+  g.reconciliation_status, /* reconciled or unreconciled; unreconciled when the consumed lot came from a security sale in an account whose investment ledger mixes sources */
   CASE WHEN g.currency_lot_id IS NULL THEN NULL ELSE g.acquisition_date END AS acquisition_date, /* Date the consumed Currency was acquired; null when no lot was matched (the placeholder acquisition_date the accounting loader sets for unmatched inventory is not a real observation) */
   g.disposal_date, /* Date the Currency was disposed */
   g.valuation_rate_date, /* Date of the actual terms or stored valuation rate */

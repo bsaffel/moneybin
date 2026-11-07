@@ -166,9 +166,9 @@ class InvestmentHoldingRow:
     ``privacy/taxonomy.py``: ``market_value``/``unrealized_gain`` are BALANCE
     (a held "stock" figure, like ``cost_basis``); ``price_date``/
     ``days_since_observed`` are TIMESTAMP_OBSERVABILITY (a public close's date,
-    and a value bijective with it); ``price_source``/``valuation_status`` are
-    TXN_TYPE (routing tags). None of them raises the payload's derived tier —
-    ``cost_basis`` already carries BALANCE.
+    and a value bijective with it); ``price_source``/``valuation_status``/
+    ``reconciliation_status`` are TXN_TYPE (routing tags). None of them raises
+    the payload's derived tier — ``cost_basis`` already carries BALANCE.
     """
 
     account_id: Annotated[str, DataClass.RECORD_ID]
@@ -180,6 +180,7 @@ class InvestmentHoldingRow:
     quantity: Annotated[Decimal, DataClass.TXN_AMOUNT]
     cost_basis: Annotated[Decimal, DataClass.BALANCE]
     average_cost: Annotated[Decimal | None, DataClass.BALANCE]
+    reconciliation_status: Annotated[str, DataClass.TXN_TYPE]
     currency_code: Annotated[str | None, DataClass.CURRENCY]
     market_value: Annotated[Decimal | None, DataClass.BALANCE]
     unrealized_gain: Annotated[Decimal | None, DataClass.BALANCE]
@@ -201,6 +202,7 @@ class InvestmentHoldingRow:
             quantity=row.quantity,
             cost_basis=row.cost_basis,
             average_cost=row.average_cost,
+            reconciliation_status=row.reconciliation_status,
             currency_code=row.currency_code,
             market_value=row.market_value,
             unrealized_gain=row.unrealized_gain,
@@ -281,6 +283,7 @@ class InvestmentLotRow:
     cost_basis_total: Annotated[Decimal, DataClass.BALANCE]
     cost_basis_remaining: Annotated[Decimal, DataClass.BALANCE]
     cost_basis_method: Annotated[str, DataClass.TXN_TYPE]
+    reconciliation_status: Annotated[str, DataClass.TXN_TYPE]
     currency_code: Annotated[str | None, DataClass.CURRENCY]
     is_open: Annotated[bool, DataClass.TXN_TYPE]
     basis_incomplete: Annotated[bool, DataClass.TXN_TYPE]
@@ -303,6 +306,7 @@ class InvestmentLotRow:
             cost_basis_total=row.cost_basis_total,
             cost_basis_remaining=row.cost_basis_remaining,
             cost_basis_method=row.cost_basis_method,
+            reconciliation_status=row.reconciliation_status,
             currency_code=row.currency_code,
             is_open=row.is_open,
             basis_incomplete=row.basis_incomplete,
@@ -354,6 +358,7 @@ class InvestmentGainRow:
     term: Annotated[str, DataClass.TXN_TYPE]
     cost_basis_method: Annotated[str, DataClass.TXN_TYPE]
     basis_incomplete: Annotated[bool, DataClass.TXN_TYPE]
+    reconciliation_status: Annotated[str, DataClass.TXN_TYPE]
     currency_code: Annotated[str | None, DataClass.CURRENCY]
 
     @classmethod
@@ -378,6 +383,7 @@ class InvestmentGainRow:
             term=row.term,
             cost_basis_method=row.cost_basis_method,
             basis_incomplete=row.basis_incomplete,
+            reconciliation_status=row.reconciliation_status,
             currency_code=row.currency_code,
         )
 

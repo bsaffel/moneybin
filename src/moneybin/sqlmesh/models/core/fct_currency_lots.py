@@ -41,6 +41,7 @@ from moneybin.metrics.registry import set_fx_accounting_rows
         "source_conversion_id": "VARCHAR",
         "source_investment_transaction_id": "VARCHAR",
         "source_transfer_id": "VARCHAR",
+        "reconciliation_status": "VARCHAR",
         "currency_code": "VARCHAR",
         "acquisition_type": "VARCHAR",
         "cost_basis_method": "VARCHAR",
@@ -58,6 +59,7 @@ from moneybin.metrics.registry import set_fx_accounting_rows
     column_descriptions={
         "currency_lot_id": "Stable content hash of the Currency acquisition",
         "account_id": "Account holding the Currency lot",
+        "reconciliation_status": "reconciled | unreconciled; inherited from the account of the security sale that opened the lot; always reconciled for a lot a conversion or Transfer opened",
         "currency_code": "Currency held by this lot",
         "acquisition_date": "Date the Currency was acquired",
         "acquisition_type": "conversion | security_sale | transfer",
@@ -100,6 +102,7 @@ def execute(
         pa.field("source_conversion_id", pa.string()),
         pa.field("source_investment_transaction_id", pa.string()),
         pa.field("source_transfer_id", pa.string()),
+        pa.field("reconciliation_status", pa.string()),
         pa.field("currency_code", pa.string()),
         pa.field("acquisition_type", pa.string()),
         pa.field("cost_basis_method", pa.string()),

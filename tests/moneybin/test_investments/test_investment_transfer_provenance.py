@@ -172,6 +172,7 @@ def test_reviewed_transfer_preserves_present_manual_fields_and_exact_revisions(
     before = ledger(db)
     assert len(before) == 2
     assert {row["type"] for row in before} == {"transfer_in"}
+    assert {row["reconciliation_status"] for row in before} == {"unreconciled"}
     source_rows = db.execute(
         """SELECT source_type, source_origin, native_reference, observation_version,
                   original_acquisition_date, amount
@@ -215,6 +216,7 @@ def test_reviewed_transfer_preserves_present_manual_fields_and_exact_revisions(
         "source_type": "plaid",
         "source_origin": "origin",
         "description": "Aggregator context",
+        "reconciliation_status": "reconciled",
         "currency_code": "USD",
         "quantity": Decimal("4"),
         "price": Decimal("100"),

@@ -48,7 +48,8 @@ def _install_realized_fx_sources(model_db: Database) -> None:
             acquisition_date DATE,
             disposal_date DATE,
             valuation_rate_date DATE,
-            updated_at TIMESTAMP
+            updated_at TIMESTAMP,
+            reconciliation_status VARCHAR
         )
     """)
     model_db.execute("""
@@ -56,11 +57,11 @@ def _install_realized_fx_sources(model_db: Database) -> None:
             ('gain-a', 'acct', 'dispose', 'lot-a', 'EUR', 'USD', 'fifo',
              'actual', 'complete', NULL, 30.00, 36.00, 30.00, 6.00, 0.00,
              1.20000000, '2026-01-02', '2026-03-04', '2026-03-04',
-             '2026-03-04 12:00:00'),
+             '2026-03-04 12:00:00', 'reconciled'),
             ('gain-b', 'acct', 'dispose', 'lot-b', 'EUR', 'USD', 'fifo',
              'actual', 'complete', NULL, 15.00, 18.00, 16.50, 1.50, 0.00,
              1.20000000, '2026-02-03', '2026-03-04', '2026-03-04',
-             '2026-03-04 12:00:00')
+             '2026-03-04 12:00:00', 'reconciled')
     """)
     model_db.execute("""
         CREATE OR REPLACE TABLE core.fct_currency_lots (
@@ -238,7 +239,7 @@ def test_realized_fx_keeps_incomplete_rows_without_joined_lineage(
             ('gain-incomplete', 'acct', 'missing-conversion', NULL, 'EUR', 'USD',
              'fifo', 'actual', 'incomplete', 'missing_acquisition_basis', 5.00,
              6.00, NULL, NULL, 0.00, 1.20000000, NULL, '2026-03-05',
-             '2026-03-05', '2026-03-05 12:00:00')
+             '2026-03-05', '2026-03-05 12:00:00', 'reconciled')
     """)
     _install_report(model_db, "realized_fx")
 
@@ -279,7 +280,7 @@ def test_realized_fx_nulls_fabricated_acquisition_date_for_unmatched_inventory(
             ('gain-unmatched', 'acct', 'dispose', NULL, 'EUR', 'USD', 'fifo',
              'actual', 'incomplete', 'negative_inventory', 5.00, 6.00, NULL,
              NULL, 0.00, 1.20000000, '2026-03-04', '2026-03-04', '2026-03-04',
-             '2026-03-04 12:00:00')
+             '2026-03-04 12:00:00', 'reconciled')
     """)
     _install_report(model_db, "realized_fx")
 

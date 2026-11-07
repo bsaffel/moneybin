@@ -221,6 +221,19 @@ def investment_source_choice_counts(db: Database) -> dict[str, int]:
     return {source: counts.get(source, 0) for source in sorted(INVESTMENT_SOURCE_TYPES)}
 
 
+def unreconciled_investment_accounts(db: Database) -> int:
+    """Accounts whose ledger rows are marked ``reconciliation_status = 'unreconciled'``."""
+    row = db.execute(
+        f"""
+        SELECT COUNT(DISTINCT account_id)
+        FROM {FCT_INVESTMENT_TRANSACTIONS.full_name}
+        WHERE reconciliation_status = ?
+        """,  # noqa: S608  # TableRef constant
+        ["unreconciled"],
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 def history_phrase(source_type: str) -> str:
     """The user-facing name of a source's history."""
     if source_type == "manual":

@@ -7021,6 +7021,27 @@ def test_unproposed_check_skips_without_echoing_the_raw_cause() -> None:
     assert "81.27" not in result.detail
 
 
+@pytest.mark.integration
+def test_overlap_check_sets_reconciliation_gauge_and_marks_unreconciled(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.moneybin.test_investments._overlap_seed import seed_overlap
+
+    seed_overlap(db)
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+
+    assert (
+        REGISTRY.get_sample_value(
+            "moneybin_reconciliation_unreconciled_accounts", {"ledger": "investment"}
+        )
+        == 1.0
+    )
+    detail = result.detail or ""
+    assert "holdings, lots and gains double-count and are marked unreconciled" in detail
+    assert detail.count("double-count") == 1
+    assert "withheld" not in detail
+
+
 @pytest.mark.parametrize("include_in_net_worth", [True, False])
 def test_sync_completeness_doctor_supplies_provider_window_and_review_recovery(
     db: Database, include_in_net_worth: bool

@@ -60,6 +60,7 @@ def _ledger_frame() -> pd.DataFrame:
         "amount": ["-1000.00", "300.00"],
         "fees": ["0.00", "0.00"],
         "currency_code": ["USD", "USD"],
+        "reconciliation_status": ["unreconciled", "unreconciled"],
         "updated_at": ["2024-01-01 09:00:00", "2024-07-02 10:00:00"],
     })
 
@@ -91,7 +92,7 @@ def _selections_frame() -> pd.DataFrame:
 
 
 def test_load_engine_inputs_maps_events_exactly_and_computes_freshness() -> None:
-    events, _method_for, _selections_for, group_updated_at = load_engine_inputs(
+    events, _method_for, _selections_for, group_updated_at, _recon = load_engine_inputs(
         _ctx(
             _ledger_frame(),
             _securities_frame(),
@@ -119,7 +120,7 @@ def test_load_engine_inputs_maps_events_exactly_and_computes_freshness() -> None
 def test_load_engine_inputs_method_for_prefers_security_then_account_then_fifo() -> (
     None
 ):
-    _events, method_for, _selections_for, _freshness = load_engine_inputs(
+    _events, method_for, _selections_for, _freshness, _recon = load_engine_inputs(
         _ctx(
             _ledger_frame(),
             _securities_frame(),
@@ -144,7 +145,7 @@ def test_load_engine_inputs_method_for_average_default_does_not_leak_to_stocks()
     # security it happens to hold with no per-security override — Req 12
     # validates 'average' to mutual_fund/etf, and that restriction must hold
     # across the account-fallback path too, not just at direct election.
-    _events, method_for, _selections_for, _freshness = load_engine_inputs(
+    _events, method_for, _selections_for, _freshness, _recon = load_engine_inputs(
         _ctx(
             _ledger_frame(),
             _securities_frame(),
@@ -158,7 +159,7 @@ def test_load_engine_inputs_method_for_average_default_does_not_leak_to_stocks()
 def test_load_engine_inputs_selections_group_by_disposal_with_exact_quantities() -> (
     None
 ):
-    _events, _method_for, selections_for, _freshness = load_engine_inputs(
+    _events, _method_for, selections_for, _freshness, _recon = load_engine_inputs(
         _ctx(
             _ledger_frame(),
             _securities_frame(),
@@ -179,7 +180,7 @@ def test_load_engine_inputs_cash_only_row_excluded_from_freshness_map() -> None:
     ledger = _ledger_frame()
     ledger.loc[1, "security_id"] = None  # a cash-only event opens no lot
     ledger.loc[1, "updated_at"] = "2025-01-01 00:00:00"
-    events, _method_for, _selections_for, group_updated_at = load_engine_inputs(
+    events, _method_for, _selections_for, group_updated_at, _recon = load_engine_inputs(
         _ctx(ledger, _securities_frame(), _accounts_frame(), _selections_frame())
     )
 
@@ -188,3 +189,14 @@ def test_load_engine_inputs_cash_only_row_excluded_from_freshness_map() -> None:
     assert events[1].security_id is None
     # ...but never advances the (account, security) freshness key.
     assert group_updated_at == {("acct1", "sec1"): datetime(2024, 1, 1, 9, 0, 0)}
+
+
+def test_load_engine_inputs_maps_reconciliation_status_per_account() -> None:
+    ledger = _ledger_frame()
+    ledger["account_id"] = ["acc_a", "acc_b"]
+    ledger["reconciliation_status"] = ["unreconciled", "reconciled"]
+    result = load_engine_inputs(
+        _ctx(ledger, _securities_frame(), _accounts_frame(), _selections_frame())
+    )
+
+    assert result[4] == {"acc_a": "unreconciled", "acc_b": "reconciled"}

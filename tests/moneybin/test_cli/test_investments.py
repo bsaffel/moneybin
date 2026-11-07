@@ -713,13 +713,14 @@ class TestHoldingsAndGains:
                    1200.00::DECIMAL(18,2) AS market_value,
                    200.00::DECIMAL(18,2) AS unrealized_gain,
                    DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
-                   0::INT AS days_since_observed, 'valued' AS valuation_status
+                   0::INT AS days_since_observed, 'valued' AS valuation_status,
+                   'reconciled' AS reconciliation_status
             UNION ALL
             SELECT 'acct_brokerage', 'sec_2', 5::DECIMAL(28,10),
                    500.00::DECIMAL(18,2), 100.00::DECIMAL(28,10), 'USD',
                    CAST(NULL AS DECIMAL(18,2)), CAST(NULL AS DECIMAL(18,2)),
                    CAST(NULL AS DATE), CAST(NULL AS VARCHAR), CAST(NULL AS INT),
-                   'unpriced'
+                   'unpriced', 'reconciled'
             """  # test fixture view, literal test data only
         )
         result = runner.invoke(app, ["investments", "holdings", "--wide"])
@@ -765,7 +766,8 @@ class TestHoldingsAndGains:
                    1200.00::DECIMAL(18,2) AS market_value,
                    200.00::DECIMAL(18,2) AS unrealized_gain,
                    DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
-                   0::INT AS days_since_observed, 'valued' AS valuation_status
+                   0::INT AS days_since_observed, 'valued' AS valuation_status,
+                   'reconciled' AS reconciliation_status
             """  # test fixture view, literal test data only
         )
         result = runner.invoke(app, ["investments", "holdings"])
@@ -803,7 +805,8 @@ class TestHoldingsAndGains:
                    200.00::DECIMAL(18,2) AS unrealized_gain,
                    DATE '2026-03-02' AS price_date, 'plaid' AS price_source,
                    135::INT AS days_since_observed,
-                   'carried_forward' AS valuation_status
+                   'carried_forward' AS valuation_status,
+                   'reconciled' AS reconciliation_status
             """  # test fixture view, literal test data only
         )
         result = runner.invoke(app, ["investments", "holdings"])
@@ -841,7 +844,8 @@ class TestHoldingsAndGains:
                    NULL::DECIMAL(18,2) AS unrealized_gain,
                    NULL::DATE AS price_date, NULL AS price_source,
                    NULL::INT AS days_since_observed,
-                   'unpriced' AS valuation_status
+                   'unpriced' AS valuation_status,
+                   'reconciled' AS reconciliation_status
             """  # test fixture view, literal test data only
         )
 
@@ -853,30 +857,16 @@ class TestHoldingsAndGains:
         assert "valuation_status" not in result.stderr
 
     @pytest.mark.unit
-    def test_holdings_json_degrades_on_a_source_overlap(
+    def test_holdings_json_degrades_on_an_unreconciled_position(
         self, runner: CliRunner, db: Database
     ) -> None:
         """CLI JSON carries the same machine-readable state the MCP tool does.
 
         Both surfaces read one service, so the code that says "these numbers
-        would double-count" must reach both envelopes — a caller scripting the
-        CLI is as entitled to branch on it as an agent driving MCP.
+        double-count" must reach both envelopes — a caller scripting the CLI is
+        as entitled to branch on it as an agent driving MCP.
         """
-        db.conn.execute(
-            """
-            CREATE OR REPLACE VIEW core.dim_holdings AS
-            SELECT 'acct_brokerage' AS account_id, 'sec_2' AS security_id,
-                   20::DECIMAL(28,10) AS quantity,
-                   2000.00::DECIMAL(18,2) AS cost_basis,
-                   100.00::DECIMAL(28,10) AS average_cost,
-                   'USD' AS currency_code,
-                   NULL::DECIMAL(18,2) AS market_value,
-                   NULL::DECIMAL(18,2) AS unrealized_gain,
-                   NULL::DATE AS price_date, NULL AS price_source,
-                   NULL::INT AS days_since_observed,
-                   'source_overlap' AS valuation_status
-            """  # test fixture view, literal test data only
-        )
+        _unreconciled_holdings_view(db)
 
         result = runner.invoke(app, ["investments", "holdings", "--output", "json"])
 
@@ -886,6 +876,37 @@ class TestHoldingsAndGains:
         assert payload["summary"]["degraded_reason"].startswith(
             "investment_source_overlap:"
         )
+        row = payload["data"]["rows"][0]
+        assert row["reconciliation_status"] == "unreconciled"
+        assert row["market_value"] is not None
+
+    @pytest.mark.unit
+    def test_holdings_text_marks_an_unreconciled_position_under_quiet(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        """The figure prints, the row is marked, and the warning names the accounts."""
+        _unreconciled_holdings_view(db)
+
+        result = runner.invoke(app, ["investments", "holdings", "-q"])
+
+        assert result.exit_code == 0, result.output
+        assert "reconciliation" in result.stdout
+        assert "unreconciled" in result.stdout
+        assert "2,400.00" in result.stdout
+        flat = " ".join(result.stdout.split())
+        assert "1 position(s) in 1 account(s) are unreconciled" in flat
+
+    @pytest.mark.unit
+    def test_holdings_text_of_a_clean_portfolio_has_no_reconciliation_column(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        _unreconciled_holdings_view(db, status="reconciled")
+
+        result = runner.invoke(app, ["investments", "holdings"])
+
+        assert result.exit_code == 0, result.output
+        assert "reconciliation" not in result.stdout
+        assert "investment_source_overlap" not in result.output
 
     @pytest.mark.unit
     def test_holdings_text_reports_the_stalest_close_as_a_number(
@@ -904,7 +925,8 @@ class TestHoldingsAndGains:
                    200.00::DECIMAL(18,2) AS unrealized_gain,
                    DATE '2026-03-02' AS price_date, 'plaid' AS price_source,
                    135::INT AS days_since_observed,
-                   'carried_forward' AS valuation_status
+                   'carried_forward' AS valuation_status,
+                   'reconciled' AS reconciliation_status
             """  # test fixture view, literal test data only
         )
         result = runner.invoke(app, ["investments", "holdings"])
@@ -929,7 +951,8 @@ class TestHoldingsAndGains:
                    CAST(NULL AS DATE) AS price_date,
                    CAST(NULL AS VARCHAR) AS price_source,
                    CAST(NULL AS INT) AS days_since_observed,
-                   'unpriced' AS valuation_status
+                   'unpriced' AS valuation_status,
+                   'reconciled' AS reconciliation_status
             """  # test fixture view, literal test data only
         )
         result = runner.invoke(app, ["investments", "holdings"])
@@ -952,12 +975,13 @@ class TestHoldingsAndGains:
                    1200.00::DECIMAL(18,2) AS market_value,
                    200.00::DECIMAL(18,2) AS unrealized_gain,
                    DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
-                   0::INT AS days_since_observed, 'valued' AS valuation_status
+                   0::INT AS days_since_observed, 'valued' AS valuation_status,
+                   'reconciled' AS reconciliation_status
             UNION ALL
             SELECT 'acct_brokerage', 'sec_2', 5::DECIMAL(28,10),
                    500.00::DECIMAL(18,2), 100.00::DECIMAL(28,10), 'USD',
                    800.00::DECIMAL(18,2), 300.00::DECIMAL(18,2),
-                   DATE '2026-07-15', 'plaid', 0::INT, 'valued'
+                   DATE '2026-07-15', 'plaid', 0::INT, 'valued', 'reconciled'
             """  # test fixture view, literal test data only
         )
         result = runner.invoke(app, ["investments", "holdings"])
@@ -981,12 +1005,13 @@ class TestHoldingsAndGains:
                    1200.00::DECIMAL(18,2) AS market_value,
                    200.00::DECIMAL(18,2) AS unrealized_gain,
                    DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
-                   0::INT AS days_since_observed, 'valued' AS valuation_status
+                   0::INT AS days_since_observed, 'valued' AS valuation_status,
+                   'reconciled' AS reconciliation_status
             UNION ALL
             SELECT 'acct_brokerage', 'sec_2', 5::DECIMAL(28,10),
                    500.00::DECIMAL(18,2), 100.00::DECIMAL(28,10), 'EUR',
                    900.00::DECIMAL(18,2), 400.00::DECIMAL(18,2),
-                   DATE '2026-07-15', 'plaid', 0::INT, 'valued'
+                   DATE '2026-07-15', 'plaid', 0::INT, 'valued', 'reconciled'
             """  # test fixture view, literal test data only
         )
         result = runner.invoke(app, ["investments", "holdings"])
@@ -1031,12 +1056,13 @@ class TestHoldingsAndGains:
                    1200.00::DECIMAL(18,2) AS market_value,
                    200.00::DECIMAL(18,2) AS unrealized_gain,
                    DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
-                   0::INT AS days_since_observed, 'valued' AS valuation_status
+                   0::INT AS days_since_observed, 'valued' AS valuation_status,
+                   'reconciled' AS reconciliation_status
             UNION ALL
             SELECT 'acct_brokerage', 'sec_2', 5::DECIMAL(28,10),
                    500.00::DECIMAL(18,2), 100.00::DECIMAL(28,10), 'EUR',
                    900.00::DECIMAL(18,2), 400.00::DECIMAL(18,2),
-                   DATE '2026-07-15', 'plaid', 0::INT, 'valued'
+                   DATE '2026-07-15', 'plaid', 0::INT, 'valued', 'reconciled'
             """  # test fixture view, literal test data only
         )
         result = runner.invoke(app, ["investments", "holdings"])
@@ -1054,19 +1080,7 @@ class TestHoldingsAndGains:
         self, runner: CliRunner, db: Database
     ) -> None:
         """Realized gains double-count too, on the surface taxes are filed from."""
-        _seed_two_source_ledger(db)
-        db.conn.execute(
-            """
-            INSERT INTO core.fct_realized_gains
-                (realized_gain_id, account_id, security_id, disposal_txn_id,
-                 lot_id, quantity, acquisition_date, disposal_date, proceeds,
-                 cost_basis, gain_loss, term, cost_basis_method,
-                 basis_incomplete, currency_code)
-            VALUES ('gain_1', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a', 5,
-                    '2024-01-01', '2024-06-12', 950.00, 750.00, 200.00, 'long',
-                    'fifo', false, 'USD')
-            """  # test fixture insert, static SQL
-        )
+        _unreconciled_gain(db)
 
         result = runner.invoke(app, ["investments", "gains", "--output", "json"])
 
@@ -1076,6 +1090,20 @@ class TestHoldingsAndGains:
         assert payload["summary"]["degraded_reason"].startswith(
             "investment_source_overlap:"
         )
+        assert payload["data"]["rows"][0]["reconciliation_status"] == "unreconciled"
+
+    @pytest.mark.unit
+    def test_gains_text_marks_an_unreconciled_row(
+        self, runner: CliRunner, db: Database, wide_terminal: None
+    ) -> None:
+        _unreconciled_gain(db)
+
+        result = runner.invoke(app, ["investments", "gains", "-q"])
+
+        assert result.exit_code == 0, result.output
+        assert "reconciliation" in result.stdout
+        assert "unreconciled" in result.stdout
+        assert "investment_source_overlap" in result.stdout
 
     @pytest.mark.unit
     def test_gains_json_reports_basis_incomplete_warning(
@@ -1348,7 +1376,8 @@ def _seed_one_position_everywhere(
                1200.00::DECIMAL(18,2) AS market_value,
                200.00::DECIMAL(18,2) AS unrealized_gain,
                DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
-               0::INT AS days_since_observed, 'valued' AS valuation_status
+               0::INT AS days_since_observed, 'valued' AS valuation_status,
+               'reconciled' AS reconciliation_status
         """  # test fixture view, literal test data only
     )
 
@@ -1543,27 +1572,38 @@ class TestWideAtEightyColumns:
 # ---------------------------------------------------------------------------
 
 
-def _seed_two_source_ledger(
-    db: Database, *, account_id: str = "acct_brokerage"
-) -> None:
-    """Give one account an investment ledger arriving from two sources at once.
+def _unreconciled_holdings_view(db: Database, *, status: str = "unreconciled") -> None:
+    """One valued position whose account's ledger arrives from two sources."""
+    db.conn.execute(
+        f"""
+        CREATE OR REPLACE VIEW core.dim_holdings AS
+        SELECT 'acct_brokerage' AS account_id, 'sec_2' AS security_id,
+               20::DECIMAL(28,10) AS quantity,
+               2000.00::DECIMAL(18,2) AS cost_basis,
+               100.00::DECIMAL(28,10) AS average_cost,
+               'USD' AS currency_code,
+               2400.00::DECIMAL(18,2) AS market_value,
+               400.00::DECIMAL(18,2) AS unrealized_gain,
+               DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
+               0::INT AS days_since_observed,
+               'valued' AS valuation_status,
+               '{status}' AS reconciliation_status
+        """  # test fixture view, literal test data only
+    )
 
-    Seeded on the ledger because that is where the fault lives:
-    ``core.fct_investment_lots`` and ``core.fct_realized_gains`` carry no
-    status column of their own, so both reads consult the ledger to learn that
-    the rows they just returned double-count.
-    """
-    db.conn.executemany(
+
+def _unreconciled_gain(db: Database) -> None:
+    db.conn.execute(
         """
-        INSERT INTO core.fct_investment_transactions
-            (investment_transaction_id, account_id, security_id, trade_date,
-             type, quantity, amount, currency_code, source_type)
-        VALUES (?, ?, 'sec_1', '2024-01-15', 'buy', 10, -1500.00, 'USD', ?)
-        """,  # test fixture insert, static SQL
-        [
-            ["evt_manual", account_id, "manual"],
-            ["evt_plaid", account_id, "plaid"],
-        ],
+        INSERT INTO core.fct_realized_gains
+            (realized_gain_id, account_id, security_id, disposal_txn_id,
+             lot_id, quantity, acquisition_date, disposal_date, proceeds,
+             cost_basis, gain_loss, term, cost_basis_method,
+             basis_incomplete, reconciliation_status, currency_code)
+        VALUES ('gain_1', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a', 5,
+                '2024-01-01', '2024-06-12', 950.00, 750.00, 200.00, 'long',
+                'fifo', false, 'unreconciled', 'USD')
+        """  # test fixture insert, static SQL
     )
 
 
@@ -1621,7 +1661,7 @@ class TestLotsList:
         }
 
     @pytest.mark.unit
-    def test_lots_json_degrades_on_a_source_overlap(
+    def test_lots_json_degrades_on_an_unreconciled_lot(
         self, runner: CliRunner, db: Database
     ) -> None:
         """The lots read carries the same machine-readable state holdings does.
@@ -1629,16 +1669,15 @@ class TestLotsList:
         A caller scripting the CLI is as entitled to branch on "these lots
         double-count" as an agent driving MCP — both surfaces read one service.
         """
-        _seed_two_source_ledger(db)
         db.conn.execute(
             """
             INSERT INTO core.fct_investment_lots
                 (lot_id, account_id, security_id, acquisition_date,
                  acquisition_type, original_quantity, remaining_quantity,
                  cost_basis_total, cost_basis_remaining, cost_basis_method,
-                 currency_code, is_open)
+                 reconciliation_status, currency_code, is_open)
             VALUES ('lot_open', 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
-                    10, 10, 1500.00, 1500.00, 'fifo', 'USD', true)
+                    10, 10, 1500.00, 1500.00, 'fifo', 'unreconciled', 'USD', true)
             """  # test fixture insert, static SQL
         )
 
@@ -1724,35 +1763,33 @@ class TestLotsList:
         assert "incomplete" not in result.stderr
 
     @pytest.mark.unit
-    def test_lots_list_discloses_a_source_overlap_even_under_quiet(
-        self, runner: CliRunner, db: Database
+    def test_lots_list_discloses_an_unreconciled_lot_even_under_quiet(
+        self, runner: CliRunner, db: Database, wide_terminal: None
     ) -> None:
         """Double-counted lots may not print as though they were right.
 
         `-q` drops status lines, not disclosures about the figures — the rule
-        `investments gains` follows for an incomplete basis. This table cannot
-        fall back the way the other two do: `investments holdings` keeps a
-        `status` column that reads `source_overlap` under `-q`, and the
-        basis-incomplete case here has its own per-row marker. A source overlap
-        has neither, so silencing the line leaves a doubled quantity and basis
-        on screen with nothing at all saying so.
+        `investments gains` follows for an incomplete basis. The row carries the
+        `reconciliation` marker and the warning survives beneath it.
         """
-        _seed_two_source_ledger(db)
         db.conn.execute(
             """
             INSERT INTO core.fct_investment_lots
                 (lot_id, account_id, security_id, acquisition_date,
                  acquisition_type, original_quantity, remaining_quantity,
                  cost_basis_total, cost_basis_remaining, cost_basis_method,
-                 currency_code, is_open, basis_incomplete)
+                 reconciliation_status, currency_code, is_open, basis_incomplete)
             VALUES ('lot_overlap', 'acct_brokerage', 'sec_1', '2024-01-15',
-                    'buy', 10, 10, 1500.00, 1500.00, 'fifo', 'USD', true, true)
+                    'buy', 10, 10, 1500.00, 1500.00, 'fifo', 'unreconciled', 'USD',
+                    true, true)
             """  # test fixture insert, static SQL
         )
 
         result = runner.invoke(app, ["investments", "lots", "list", "-q"])
 
         assert result.exit_code == 0, result.output
+        assert "reconciliation" in result.stdout
+        assert "unreconciled" in result.stdout
         assert "investment_source_overlap" in result.stdout
         # The basis-incomplete warning stays suppressed — it has the per-row
         # marker to fall back on, which is why `-q` may drop it.
@@ -1763,16 +1800,16 @@ class TestLotsList:
         self, runner: CliRunner, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A page contains the source-overlap warning before the reader exits it."""
-        _seed_two_source_ledger(db)
         db.conn.execute(
             """
             INSERT INTO core.fct_investment_lots
                 (lot_id, account_id, security_id, acquisition_date,
                  acquisition_type, original_quantity, remaining_quantity,
                  cost_basis_total, cost_basis_remaining, cost_basis_method,
-                 currency_code, is_open, basis_incomplete)
+                 reconciliation_status, currency_code, is_open, basis_incomplete)
             VALUES ('lot_paged', 'acct_brokerage', 'sec_1', '2024-01-15',
-                    'buy', 10, 10, 1500.00, 1500.00, 'fifo', 'USD', true, false)
+                    'buy', 10, 10, 1500.00, 1500.00, 'fifo', 'unreconciled', 'USD',
+                    true, false)
             """  # test fixture insert, static SQL
         )
         monkeypatch.setattr(
@@ -2092,6 +2129,69 @@ class TestLotsSelect:
         ).fetchone()
         assert remaining is not None
         assert remaining[0] == 0
+
+    @staticmethod
+    def _seed_unreconciled_disposal(db: Database) -> None:
+        _elect_cost_basis_method(db, "specific")
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_transactions
+                (investment_transaction_id, account_id, security_id, trade_date,
+                 type, quantity, reconciliation_status)
+            VALUES ('sell_1', 'acct_brokerage', 'sec_1', '2024-06-15', 'sell', -10,
+                    'unreconciled')
+            """  # test fixture insert, static SQL
+        )
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 original_quantity, remaining_quantity)
+            VALUES ('lot_a', 'acct_brokerage', 'sec_1', '2024-01-10', 6, 6)
+            """  # test fixture insert, static SQL
+        )
+
+    @pytest.mark.unit
+    def test_select_in_an_unreconciled_account_warns_under_quiet(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """The warning is a trust statement about the selection, so `-q` keeps it."""
+        self._seed_unreconciled_disposal(db)
+
+        result = runner.invoke(
+            app, ["investments", "lots", "select", "sell_1", "--lot", "lot_a:5", "-q"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Lot selection saved" in result.stdout
+        assert "investment_source_overlap:" in result.stderr
+
+    @pytest.mark.unit
+    def test_select_json_in_an_unreconciled_account_degrades(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        self._seed_unreconciled_disposal(db)
+
+        result = runner.invoke(
+            app,
+            [
+                "investments",
+                "lots",
+                "select",
+                "sell_1",
+                "--lot",
+                "lot_a:5",
+                "--output",
+                "json",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["summary"]["degraded"] is True
+        assert payload["summary"]["degraded_reason"].startswith(
+            "investment_source_overlap:"
+        )
 
     @pytest.mark.unit
     def test_select_json_reports_high_sensitivity_and_selections(

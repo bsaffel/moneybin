@@ -48,6 +48,7 @@ from moneybin.investments.sqlmesh_loader import load_engine_inputs
         "lot_id": "VARCHAR",
         "term": "VARCHAR",
         "cost_basis_method": "VARCHAR",
+        "reconciliation_status": "VARCHAR",
         "currency_code": "VARCHAR",
         "quantity": "DECIMAL(28, 10)",
         "proceeds": "DECIMAL(18, 2)",
@@ -66,6 +67,7 @@ from moneybin.investments.sqlmesh_loader import load_engine_inputs
         "lot_id": "FK to core.fct_investment_lots consumed",
         "term": "'short' (held <= 1 year) | 'long' (held > 1 year)",
         "cost_basis_method": "Method that produced this basis",
+        "reconciliation_status": "reconciled | unreconciled; inherited from core.fct_investment_transactions (reconciliation-status.md)",
         "currency_code": "Denominating currency",
         "quantity": "Units drawn from this lot for this disposal",
         "proceeds": "Sale proceeds attributable to this quantity (net of fees)",
@@ -90,7 +92,13 @@ def execute(
     **kwargs: t.Any,
 ) -> Iterator[pd.DataFrame]:
     """Run the cost-basis engine and emit one row per realized-gain slice."""
-    events, method_for, selections_for, group_updated_at = load_engine_inputs(context)
+    (
+        events,
+        method_for,
+        selections_for,
+        group_updated_at,
+        account_reconciliation,
+    ) = load_engine_inputs(context)
     if not events:
         yield from ()
         return
@@ -111,6 +119,9 @@ def execute(
             "lot_id": gain.lot_id,
             "term": gain.term,
             "cost_basis_method": gain.cost_basis_method,
+            "reconciliation_status": account_reconciliation.get(
+                gain.account_id, "reconciled"
+            ),
             "currency_code": gain.currency_code,
             "quantity": gain.quantity,
             "proceeds": gain.proceeds,
@@ -133,6 +144,7 @@ def execute(
         pa.field("lot_id", pa.string()),
         pa.field("term", pa.string()),
         pa.field("cost_basis_method", pa.string()),
+        pa.field("reconciliation_status", pa.string()),
         pa.field("currency_code", pa.string()),
         pa.field("quantity", pa.decimal128(28, 10)),
         pa.field("proceeds", pa.decimal128(18, 2)),

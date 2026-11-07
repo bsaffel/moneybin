@@ -15,6 +15,10 @@
 > [`core-updated-at-convention.md`](core-updated-at-convention.md), and
 > [`observability.md`](observability.md)
 > Closes: GitHub issue #546
+> Amended by: [`reconciliation-status.md`](reconciliation-status.md) — an
+> overlapping account's figures now publish marked
+> `reconciliation_status = 'unreconciled'` instead of having their valuation
+> withheld; the choice clears the marker the same way
 
 ## One-line goal
 
@@ -34,8 +38,11 @@ two separate accountings.
 
 MoneyBin contains that today rather than tolerating it:
 
-- `core.dim_holdings` withholds every figure for every position in the account
-  (`valuation_status = 'source_overlap'`).
+- Every derived row for the account reads
+  `reconciliation_status = 'unreconciled'`
+  ([`reconciliation-status.md`](reconciliation-status.md)). When this spec
+  shipped, `core.dim_holdings` instead withheld every valuation figure under a
+  dedicated overlap valuation status; that value has since been removed.
 - `system doctor`'s `investment_source_overlap` check fails.
 - The holdings, lots and gains reads set `summary.degraded_reason`.
 
@@ -220,11 +227,11 @@ WHERE a.investment_source_type IS NULL
 ```
 
 That is the only place the setting changes data. Every model that derives from
-the ledger inherits the filter: lots, realized gains, `core.dim_holdings`'s
-`source_overlap_accounts`, and `InvestmentService._source_overlap_accounts`.
-None of them is edited. An account whose ledger now has one source type no
-longer satisfies `COUNT(DISTINCT source_type) > 1`, so the withholding lifts by
-the same predicate that imposed it.
+the ledger inherits the filter: lots, realized gains, holdings, and the
+`reconciliation_status` the ledger computes after the filter. An account whose
+ledger now has one source type no longer satisfies
+`COUNT(DISTINCT source_type) > 1`, so it reads `reconciled` by the same
+predicate that marked it.
 
 Staging models and the raw tables are untouched. Excluded rows stay in
 `prep.stg_plaid__investment_transactions` and
@@ -235,19 +242,19 @@ restored by a clear.
 
 [`core-updated-at-convention.md`](core-updated-at-convention.md) requires
 `updated_at` to advance whenever a row's values change. A choice changes which
-rows exist, and whether the account's positions are withheld:
+rows exist, and whether the account's rows are unreconciled:
 
 - **`core.fct_investment_transactions.updated_at`** folds
   `investment_source_type_changed_at` for the account's rows. A row that
   re-enters the ledger after a clear or a change reports a timestamp newer than
   the change, rather than its original `created_at`, which an incremental
   reader has already passed.
-- **`core.dim_holdings.updated_at`** folds the same term per account. Today,
-  clearing an overlap rewinds that watermark: the convention spec's
-  §"`dim_holdings` can rewind when a source overlap clears" names a missing
-  "persisted, account-scoped signal" as the reason. This column is that signal
-  for the source-choice remedy, so that section is narrowed: the rewind
-  remains only for `import_revert`.
+- **`core.dim_holdings.updated_at`** folds the same term per account. Before it,
+  clearing an overlap rewound that watermark, for want of a "persisted,
+  account-scoped signal". This column is that signal for the source-choice
+  remedy, so the convention spec's rewind limitation (now §"the investment
+  ledger can rewind when a second source's rows are removed") remains only for
+  the paths that delete rows.
 
 ### Restating on change
 
@@ -264,7 +271,7 @@ retry. That matches how the cost-basis setting handles a failed restate.
 
 Until a refresh succeeds, the saved choice and the built ledger disagree:
 `core.fct_investment_transactions` still holds both sources' rows, so lots and
-gains double-count and holdings are withheld. The doctor reports that state
+gains double-count and every derived row stays `unreconciled`. The doctor reports that state
 (see "Detection skips a chosen account" and the doctor section below), so a
 failed restate never reads as resolved.
 
@@ -311,8 +318,9 @@ The consumers split by what they report:
 - The sync warning keeps reporting unchosen overlaps only. It never calls a
   chosen account resolved, and the pull's own refresh rebuilds the ledger from
   the saved choice, so a stale choice there is already being repaired.
-- `InvestmentService`'s `source_overlap` degradation reads the ledger, not the
-  detector, so a stale account is already withheld and caveated there.
+- `InvestmentService`'s `investment_source_overlap` degradation reads the
+  returned rows' `reconciliation_status`, not the detector, so a stale account
+  is already marked and caveated there.
 
 The same module gains the evidence that the doctor's fix needs:
 
@@ -462,7 +470,7 @@ Every message that names `import_revert` as the overlap remedy now names the
 setting instead:
 
 - the `investment_source_overlap` doctor `detail` and recipe;
-- `InvestmentService._source_overlap_reason`, the `degraded_reason` on
+- `InvestmentService`'s overlap reason (now `_unreconciled_reason`), the `degraded_reason` on
   holdings, lots and gains: "…choose one source for the account with
   `moneybin accounts set <account> --investment-source-type manual|plaid`…";
 - the MCP `sync_pull` action hint, which already says "until one source is
@@ -511,8 +519,9 @@ account labels, trade descriptions, or amounts.
   `record_event` and `record_events`. CLI flag parsing and the
   recovery-command mapping. MCP parameter and clearable-field round-trip.
 - **SQLMesh.** The `fct_investment_transactions` filter in both directions,
-  including the opening bootstrap following `plaid`. The `dim_holdings`
-  withholding lifting through the unchanged predicate. Both `updated_at` folds,
+  including the opening bootstrap following `plaid`. The account flipping to
+  `reconciled` through the unchanged predicate (originally the `dim_holdings`
+  withholding lifting, before `reconciliation-status.md`). Both `updated_at` folds,
   including the clear case.
 - **Integration.** Pull, record, overlap, set, pull again: no warning, ledger
   stable. Then clear and confirm the overlap returns. Migration upgrade parity
@@ -525,9 +534,10 @@ account labels, trade descriptions, or amounts.
 
 ## Deferred decisions
 
-- **The `source_overlap` valuation status name.** It still describes an
-  account with two sources and no choice set. A choice makes it unreachable
-  for that account, so no rename is needed.
+- **The overlap valuation status name.** Resolved by
+  [`reconciliation-status.md`](reconciliation-status.md): the value was removed
+  from `valuation_status`, and the account-level state moved to
+  `reconciliation_status`.
 - **Combining a choice with M1J.7.** Once acceptance ships, a later spec
   decides whether a chosen account can opt back into matching without
   clearing the setting first. Until then, clear the setting to return the

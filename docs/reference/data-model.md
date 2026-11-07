@@ -335,13 +335,14 @@ Current positions: the sum of open lots per `(account_id, security_id)` — a "n
 | `quantity` | DECIMAL(28,10) | Total open units (`Σ remaining_quantity` across open lots). |
 | `cost_basis` | DECIMAL(18,2) | Total open basis (`Σ cost_basis_remaining`). Under average cost the pooled remaining basis can exceed a single lot's own total — this, not `cost_basis_total`, is the meaningful figure. |
 | `average_cost` | DECIMAL(28,10) | `cost_basis / quantity`; NULL when `quantity` is 0. |
+| `reconciliation_status` | VARCHAR | `reconciled` \| `unreconciled`, inherited from the position's open lots. Independent of `valuation_status`: an `unreconciled` position still publishes `market_value` and the other figures, double-counted, and a position can be both `withheld` and `unreconciled`. |
 | `currency_code` | VARCHAR | Denominating currency for the position. |
-| `market_value` | DECIMAL(18,2) | `quantity × resolved close`. **NULL — never zero** — when unpriced, withheld, or source-overlapped (see `valuation_status`); a zero would be indistinguishable from a worthless position and silently understate any aggregate that sums it. |
+| `market_value` | DECIMAL(18,2) | `quantity × resolved close`. **NULL — never zero** — when unpriced or withheld (see `valuation_status`); a zero would be indistinguishable from a worthless position and silently understate any aggregate that sums it. |
 | `unrealized_gain` | DECIMAL(18,2) | `market_value − cost_basis`. NULL whenever `market_value` is NULL, and also on an otherwise-valued row when any contributing open lot has `basis_incomplete` (an unknown-basis `transfer_in` stores a placeholder 0.00 that would overstate the gain). |
 | `price_date` | DATE | Date of the close used (may be earlier than today). NULL exactly when `market_value` is NULL. |
 | `price_source` | VARCHAR | `source_type` that supplied the close (see `core.fct_security_prices`). NULL exactly when `price_date` is NULL. |
 | `days_since_observed` | INTEGER | `CURRENT_DATE − price_date`. NULL exactly when `price_date` is NULL. |
-| `valuation_status` | VARCHAR | `valued` (priced as of today) \| `carried_forward` (priced, but the close predates today) \| `unpriced` (no usable close resolved) \| `withheld` (the figure cannot be trusted — either a known-wrong share count, from a broker snapshot contradiction, an unreconciled split, or a fresh snapshot that dropped a position the ledger still carries; or open lots that disagree on currency, including one lot with a known currency beside one with none, which leaves no single close to value the combined quantity against) \| `source_overlap` (the account's investment ledger arrives from more than one source at once — a broker file import beside a connector sync — so the two ledgers interleave, lots double-count, and cost basis mixes two accountings). A `withheld` or `source_overlap` row publishes **no** pricing at all: `market_value`, `unrealized_gain`, `price_date`, `price_source`, `days_since_observed` are all NULL even if a fresh close did resolve — the close itself is not lost, it stays queryable in `core.fct_security_prices`. The two stay distinct because their remedies do: `withheld` wants the share count reconciled, while `source_overlap` wants one of the two feeds removed — `import_revert` on the redundant batch, the only remedy that clears it. A default `sync_disconnect` cannot: it stops future pulls but leaves every already-pulled row in place, so the overlap persists, and its purging form (`state="absent"`) removes the whole connection, cash accounts included, so it is no remedy either. `system doctor`'s `investment_source_overlap` check fails until `import_revert` runs. |
+| `valuation_status` | VARCHAR | `valued` (priced as of today) \| `carried_forward` (priced, but the close predates today) \| `unpriced` (no usable close resolved) \| `withheld` (the figure cannot be trusted — either a known-wrong share count, from a broker snapshot contradiction, an unrecorded split, or a fresh snapshot that dropped a position the ledger still carries; or open lots that disagree on currency, including one lot with a known currency beside one with none, which leaves no single close to value the combined quantity against). A `withheld` row publishes **no** pricing at all: `market_value`, `unrealized_gain`, `price_date`, `price_source`, `days_since_observed` are all NULL even if a fresh close did resolve — the close itself is not lost, it stays queryable in `core.fct_security_prices`. An account whose ledger arrives from two sources at once is not a valuation status; see `reconciliation_status`. |
 | `provider_reported_quantity` | DECIMAL(28,10) | **NON-AUTHORITATIVE.** The broker's claimed open units from its newest holdings snapshot; reconciliation reference only, never blended into `quantity`. NULL when the broker's newest snapshot doesn't report this position. |
 | `provider_reported_cost_basis` | DECIMAL(18,2) | NON-AUTHORITATIVE broker claim; same NULL rule. |
 | `provider_reported_value` | DECIMAL(18,2) | NON-AUTHORITATIVE broker claim; MoneyBin's own `market_value` is never derived from this. |
@@ -390,12 +391,13 @@ The canonical investment-transaction ledger. Grain: one row per `investment_tran
 | `price` | DECIMAL(28,10) | Per-unit price; NULL for non-priced events. |
 | `amount` | DECIMAL(18,2) | Signed cash effect: negative = out (buy), positive = in (sell/dividend). Every branch arrives in this convention already — never re-flip a provider's sign downstream. |
 | `fees` | DECIMAL(18,2) | Fee/commission component, folded into cost basis. |
+| `reconciliation_status` | VARCHAR | `reconciled` \| `unreconciled`. Account-scoped: `unreconciled` on every row of an account whose ledger — after the `investment_source_type` filter, `opening_bootstrap` rows excluded — carries more than one `source_type`, so its events exist twice and every derived figure double-counts. Never authored; choosing a source (`accounts set --investment-source-type`) makes the account `reconciled` on the next refresh. Lots, realized gains, holdings, currency lots and FX gains inherit it. |
 | `currency_code` | VARCHAR | Denominating currency; no FX in v1. The event's own captured currency, else its account's `currency_code`, else `NULL` — the same resolution `fct_transactions` uses, and there is no `'USD'` fallback. |
 | `provider_type`, `provider_subtype` | VARCHAR | Provider's original type/subtype strings (e.g. Plaid's), preserved verbatim for audit. NULL for manual and bootstrap rows. Never a ledger input — `type` is the closed taxonomy. |
 | `source_type` | VARCHAR | Origin tag: `manual` \| `plaid`. |
 | `source_origin` | VARCHAR | Institution/connection scope. |
 | `description` | VARCHAR | Free-text description. |
-| `updated_at` | TIMESTAMP | The row's own staging `created_at`. Does not advance on idempotent SQLMesh re-applies, nor when an inherited `currency_code` changes because the account's own currency was edited. |
+| `updated_at` | TIMESTAMP | The row's own staging `created_at`, advanced by the account's `investment_source_type` change time and, on an `unreconciled` row, by the account's newest ledger row. Does not advance on idempotent SQLMesh re-applies. Can fall backwards when a second source's rows are deleted (`import_revert`, a disconnect purge) — see `core-updated-at-convention.md`. |
 
 Logical grain key: `investment_transaction_id`.
 
@@ -415,6 +417,7 @@ Tax lots derived from `core.fct_investment_transactions`: each acquisition opens
 | `cost_basis_total` | DECIMAL(18,2) | Total basis of `original_quantity`, including fees. |
 | `cost_basis_remaining` | DECIMAL(18,2) | Basis attributable to `remaining_quantity`. |
 | `cost_basis_method` | VARCHAR | Resolved method that governed this lot's consumption. |
+| `reconciliation_status` | VARCHAR | `reconciled` \| `unreconciled`, inherited from the account's ledger rows (see `core.fct_investment_transactions`). Figures publish either way; an `unreconciled` row double-counts until one source is chosen. |
 | `currency_code` | VARCHAR | Denominating currency. |
 | `is_open` | BOOLEAN | `remaining_quantity > 0`. |
 | `source_transaction_id` | VARCHAR | FK → the opening `core.fct_investment_transactions` row. |
@@ -443,6 +446,7 @@ Realized gains at the 1099-B grain: one row per `(disposal transaction, consumed
 | `term` | VARCHAR | `short` (held ≤ 1 year) \| `long` (held > 1 year). |
 | `cost_basis_method` | VARCHAR | Method that produced this basis. |
 | `basis_incomplete` | BOOLEAN | TRUE when part of this disposal matched no tracked lot (a zero-basis slice). |
+| `reconciliation_status` | VARCHAR | `reconciled` \| `unreconciled`, inherited from the account's ledger rows (see `core.fct_investment_transactions`). Figures publish either way; an `unreconciled` row double-counts until one source is chosen. |
 | `currency_code` | VARCHAR | Denominating currency. |
 | `updated_at` | TIMESTAMP | Latest of the position's ledger-row timestamps. Does not advance on idempotent SQLMesh re-applies. |
 

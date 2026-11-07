@@ -186,11 +186,14 @@ Metric definitions live in `src/moneybin/metrics/registry.py` (single source of 
 | `moneybin_profile_currencies` | Gauge | — |
 | `moneybin_unknown_currency_rows` | Gauge | `grain` |
 | `moneybin_investment_source_choice_accounts` | Gauge | `investment_source_type` |
+| `moneybin_reconciliation_unreconciled_accounts` | Gauge | `ledger` |
 | `moneybin_mcp_tool_calls_total` | Counter | `tool_name` |
 | `moneybin_mcp_tool_duration_seconds` | Histogram | `tool_name` |
 | `moneybin_db_query_duration_seconds` | Histogram | `operation` |
 
 `moneybin_investment_source_choice_accounts` counts the accounts that have each investment source chosen (`manual`, `plaid`, zeros included). It is set when the `investment_source_overlap` doctor check runs, on the read path and without a write lock, as the `moneybin_net_worth_*` gauges are. Changes to the setting itself are already in `app.audit_log` through `account_settings.set`, so no counter accompanies it. See [`investment-source-choice.md`](investment-source-choice.md).
+
+`moneybin_reconciliation_unreconciled_accounts` counts accounts whose derived figures carry `reconciliation_status = 'unreconciled'`, by `ledger` (`investment`; `cash` is reserved for MB-89 and not emitted). It is set when the `investment_source_overlap` doctor check runs. See [`reconciliation-status.md`](reconciliation-status.md).
 
 ### Instrumentation API
 

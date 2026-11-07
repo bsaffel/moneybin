@@ -104,6 +104,35 @@ class PreparedTable:
     checksum_sha256: str
 
 
+def _unreconciled_row_count(table: PreparedTable) -> int | None:
+    """Rows flagged unreconciled, or ``None`` when the table has no such column."""
+    for index, column in enumerate(table.columns):
+        if column.name == "reconciliation_status":
+            return sum(1 for row in table.rows if row[index] == "unreconciled")
+    return None
+
+
+def _table_manifest(table: PreparedTable) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "name": table.name,
+        "source": _source_name(table.source),
+        "row_count": len(table.rows),
+        "checksum_sha256": table.checksum_sha256,
+        "columns": [
+            {
+                "name": column.name,
+                "duckdb_type": column.duckdb_type,
+                "data_class": column.data_class.value,
+            }
+            for column in table.columns
+        ],
+    }
+    unreconciled = _unreconciled_row_count(table)
+    if unreconciled is not None:
+        entry["unreconciled_row_count"] = unreconciled
+    return entry
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class PreparedExport:
     """An immutable snapshot ready for any renderer."""
@@ -166,23 +195,7 @@ class PreparedExport:
             "created_at": format_utc(self.created_at),
             "subject": self.subject.as_manifest(),
             "redaction_mode": self.redaction_mode,
-            "tables": [
-                {
-                    "name": table.name,
-                    "source": _source_name(table.source),
-                    "row_count": len(table.rows),
-                    "checksum_sha256": table.checksum_sha256,
-                    "columns": [
-                        {
-                            "name": column.name,
-                            "duckdb_type": column.duckdb_type,
-                            "data_class": column.data_class.value,
-                        }
-                        for column in table.columns
-                    ],
-                }
-                for table in self.tables
-            ],
+            "tables": [_table_manifest(table) for table in self.tables],
             "data_dictionary": self.data_dictionary,
             "provenance": _json_safe(self.provenance),
         }

@@ -313,6 +313,7 @@ Columns:
   price                      DECIMAL(28,10)   -- Per-unit price; NULL for non-priced events
   amount                     DECIMAL(18,2)    -- Signed cash effect: − out (buy), + in (sell/dividend)
   fees                       DECIMAL(18,2)    -- Fee/commission component folded into basis
+  reconciliation_status      VARCHAR          -- reconciled | unreconciled; unreconciled when the account's ledger (after the source choice, opening bootstraps excluded) carries more than one source_type (reconciliation-status.md)
   currency_code              VARCHAR          -- Denominating currency; no FX in v1
   source_type                VARCHAR          -- Singleton source or deterministic representative (manual | ofx | plaid)
   source_origin              VARCHAR          -- Singleton or representative institution/connection scope
@@ -345,6 +346,7 @@ Columns:
   cost_basis_total        DECIMAL(18,2)    -- Total basis of original_quantity, including fees
   cost_basis_remaining    DECIMAL(18,2)    -- Basis attributable to remaining_quantity
   cost_basis_method       VARCHAR          -- Resolved method that governed this lot's consumption (fifo | hifo | specific | average)
+  reconciliation_status   VARCHAR          -- The account's ledger status, inherited (reconciled | unreconciled)
   currency_code           VARCHAR          -- Denominating currency
   is_open                 BOOLEAN          -- remaining_quantity > 0
   source_transaction_id   VARCHAR          -- FK to the opening core.fct_investment_transactions row
@@ -373,6 +375,7 @@ Columns:
   term                VARCHAR          -- 'short' (held ≤ 1 year) | 'long' (held > 1 year)
   cost_basis_method   VARCHAR          -- Method that produced this basis
   basis_incomplete    BOOLEAN          -- TRUE when part of this disposal matched no tracked lot (zero-basis slice); see "Oversold lots"
+  reconciliation_status VARCHAR        -- The account's ledger status, inherited (reconciled | unreconciled)
   currency_code       VARCHAR          -- Denominating currency
   updated_at          TIMESTAMPTZ        -- Row freshness
 ```
@@ -396,33 +399,33 @@ Columns:
   quantity          DECIMAL(28,10)   -- Total open units (Σ remaining_quantity)
   cost_basis        DECIMAL(18,2)    -- Total open basis (Σ cost_basis_remaining)
   average_cost      DECIMAL(28,10)   -- cost_basis / quantity; (28,10) not Rule-6 (18,8) on purpose — crypto fractional-unit precision propagates through the ratio
+  reconciliation_status VARCHAR        -- The account's ledger status, inherited (reconciled | unreconciled); figures publish either way
   currency_code     VARCHAR          -- Denominating currency
   market_value      DECIMAL(18,2)    -- quantity × the resolved close; NULL (never zero) unless valuation_status is valued or carried_forward
   unrealized_gain   DECIMAL(18,2)    -- market_value − cost_basis; signed, negative below cost; NULL whenever market_value is
   price_date        DATE             -- Date of the close used, which may be earlier than today; NULL when no close resolved
   price_source      VARCHAR          -- Which source supplied the close (see core.fct_security_prices); NULL when no close resolved
   days_since_observed INT            -- Calendar days between price_date and today; 0 on a same-day close; NULL when no close resolved
-  valuation_status  VARCHAR          -- valued | carried_forward | unpriced | withheld | source_overlap
-  updated_at        TIMESTAMPTZ        -- Row freshness; folds the position's lots, its close, its broker snapshot receipt, and — for a mixed-source account — the ledger rows behind the overlap, so a status flip caused by a sibling position still advances it
+  valuation_status  VARCHAR          -- valued | carried_forward | unpriced | withheld
+  updated_at        TIMESTAMPTZ        -- Row freshness; folds the position's lots (which carry the ledger's account-level fold while the account is unreconciled, so a status flip caused by a sibling position still advances it), its close, its broker snapshot receipt, and the account's investment_source_type_changed_at
 ```
 
 > **Unrealized gain/loss** arrived with Pillar C phase C.1
 > (`investments-price-feeds.md`), computed against the close a connected broker
 > already sends. `valuation_status` says which figure the reader is holding:
 > `valued` (the close is today's), `carried_forward` (the most recent close is
-> older), `unpriced` (no close resolved), `withheld` (the share count is known
-> wrong — an unreconciled split or broker divergence), or `source_overlap` (the
-> account's investment ledger arrives from two sources at once, so every figure
-> derived from it double-counts). The last three publish NULL
-> rather than zero, so a total never silently absorbs a position it could not
-> value. `source_overlap` is kept distinct from `withheld` because its remedy is
-> outside the pipeline: `system doctor`'s `investment_source_overlap` check
-> fails on it, and only reverting the redundant import batch clears it —
-> disconnecting the connector stops future pulls but keeps the rows already
-> pulled. `core.fct_investment_lots` and `core.fct_realized_gains` derive from
-> the same interleaved ledger, so the `lots` and `gains` reads set
-> `summary.degraded_reason` with the same `investment_source_overlap:` code
-> rather than answering with a double-counted figure.
+> older), `unpriced` (no close resolved), or `withheld` (the share count is
+> known wrong — an unreconciled split or broker divergence). The last two
+> publish NULL rather than zero, so a total never silently absorbs a position
+> it could not value. An account whose investment ledger arrives from two
+> sources at once is a separate, account-level state carried by
+> `reconciliation_status = 'unreconciled'`
+> ([`reconciliation-status.md`](reconciliation-status.md)): its figures publish
+> and double-count, every holdings, lots and gains read sets
+> `summary.degraded_reason` with the `investment_source_overlap:` code and the
+> remedy, `system doctor`'s `investment_source_overlap` check fails, and
+> choosing one source with `accounts set --investment-source-type` clears it on
+> the next refresh.
 > External feeds and manual overrides (C.2) and the daily valued series
 > `core.fct_holdings_daily` (C.3) remain designed.
 
@@ -872,7 +875,7 @@ $ moneybin investments holdings --account fidelity_brokerage
 6 of 10 columns shown — --wide for all
 portfolio market_value=27,850.00 USD max_days_since_observed=3
 
-⚠️  1 position(s) report no market value — see each row's valuation_status: 'unpriced' (no close resolved), 'withheld' (a known-wrong share count, or lots that disagree on currency), or 'source_overlap' (the account's investment ledger arrives from two sources at once).
+⚠️  1 position(s) report no market value — see each row's valuation_status: 'unpriced' (no close resolved) or 'withheld' (a known-wrong share count, or lots that disagree on currency).
 ```
 
 The first column names the security by its ticker, or by its catalog name when

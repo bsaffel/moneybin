@@ -27,6 +27,7 @@ from moneybin.cli.render import (
     column_view,
     compose_human_result,
     render_human_text,
+    render_note,
 )
 from moneybin.cli.utils import (
     generated_cli_command,
@@ -43,6 +44,7 @@ from moneybin.privacy.payloads.investments import (
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.investment_service import InvestmentService, LotRow
 
+from ._reconciliation import with_reconciliation_column
 from .securities import security_label
 
 app = typer.Typer(
@@ -162,11 +164,11 @@ def investments_lots_list(
     it cannot fit the terminal and saying which.
 
     Lots in an account whose investment ledger arrives from two sources at once
-    double-count, because the two ledgers interleave rather than merge. The
-    command says so on stderr and ``-q`` does not silence it — unlike the
-    incomplete-basis note, which has a per-row marker to fall back on — and
-    under ``--output json`` it rides ``summary.degraded_reason``, the same code
-    the holdings read uses.
+    double-count, because the two ledgers interleave rather than merge. They
+    still print, marked ``unreconciled`` in a ``reconciliation`` column, with a
+    warning beneath the table that ``-q`` does not silence; under
+    ``--output json`` it rides ``summary.degraded_reason``, the same code the
+    holdings read uses.
     """
     with handle_cli_errors(
         cli_actor="investments_lots_list", payload_type=InvestmentLotsPayload
@@ -190,12 +192,12 @@ def investments_lots_list(
         )
         return
     if result.rows:
-        view = column_view(
+        columns, default = with_reconciliation_column(
             _LOTS_COLUMNS,
+            _LOTS_DEFAULT if open_only else _LOTS_ALL_DEFAULT,
             result.rows,
-            default=_LOTS_DEFAULT if open_only else _LOTS_ALL_DEFAULT,
-            wide=wide,
         )
+        view = column_view(columns, result.rows, default=default, wide=wide)
         policy = get_terminal_policy(no_pager=no_pager)
         emit_human_result(
             compose_human_result(
@@ -272,6 +274,7 @@ def investments_lots_select(
         help="Clear all lot-selection overrides for this disposal (revert to FIFO)",
     ),
     output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # no chatter to drop: the result and a trust warning
 ) -> None:
     """Set (or clear) the full specific-identification lot selection for a disposal.
 
@@ -284,6 +287,11 @@ def investments_lots_select(
     identification consumes lot selections. Elect it first with
     ``moneybin investments securities set <security-id> --method specific``;
     ``--clear`` needs no election.
+
+    A disposal in an account whose investment ledger arrives from two sources
+    at once is still saved, with a warning on stderr that a selected lot may be
+    one of a duplicated pair; ``-q`` does not silence it. Under
+    ``--output json`` the warning rides ``summary.degraded_reason``.
     """
     if clear and lot:
         typer.echo("error: --clear and --lot are mutually exclusive", err=True)
@@ -298,7 +306,7 @@ def investments_lots_select(
         selections = [] if clear else [_parse_lot_selection(entry) for entry in lot]
         with get_database(read_only=False) as db:
             try:
-                InvestmentService(db).select_lots(
+                result = InvestmentService(db).select_lots(
                     disposal_txn_id, selections, actor="cli"
                 )
             except UserError as error:
@@ -342,7 +350,11 @@ def investments_lots_select(
             ],
         )
         render_or_json(
-            build_envelope(data=payload),
+            build_envelope(
+                data=payload,
+                degraded=result.degraded_reason is not None,
+                degraded_reason=result.degraded_reason,
+            ),
             output,
             cli_actor="investments_lots_select",
         )
@@ -353,3 +365,6 @@ def investments_lots_select(
         typer.echo(
             f"Lot selection saved for {disposal_txn_id}: {len(selections)} lots."
         )
+    # A trust statement about the selection, not chatter, so `-q` keeps it.
+    for warning in result.warnings:
+        render_note(warning, warn=True)

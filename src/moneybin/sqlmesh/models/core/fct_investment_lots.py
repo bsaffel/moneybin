@@ -48,6 +48,7 @@ from moneybin.investments.sqlmesh_loader import load_engine_inputs
         "source_transaction_id": "VARCHAR",
         "acquisition_type": "VARCHAR",
         "cost_basis_method": "VARCHAR",
+        "reconciliation_status": "VARCHAR",
         "currency_code": "VARCHAR",
         "original_quantity": "DECIMAL(28, 10)",
         "remaining_quantity": "DECIMAL(28, 10)",
@@ -65,6 +66,7 @@ from moneybin.investments.sqlmesh_loader import load_engine_inputs
         "source_transaction_id": "FK to the opening core.fct_investment_transactions row",
         "acquisition_type": "buy | reinvest | transfer_in",
         "cost_basis_method": "Resolved method that governed this lot's consumption (fifo | hifo | specific | average)",
+        "reconciliation_status": "reconciled | unreconciled; inherited from core.fct_investment_transactions (reconciliation-status.md)",
         "currency_code": "Denominating currency",
         "original_quantity": "Units when the lot opened",
         "remaining_quantity": "Open units after disposals consumed (0 when fully closed)",
@@ -89,7 +91,13 @@ def execute(
     **kwargs: t.Any,
 ) -> Iterator[pd.DataFrame]:
     """Run the cost-basis engine and emit one row per derived tax lot."""
-    events, method_for, selections_for, group_updated_at = load_engine_inputs(context)
+    (
+        events,
+        method_for,
+        selections_for,
+        group_updated_at,
+        account_reconciliation,
+    ) = load_engine_inputs(context)
     if not events:
         # SQLMesh rejects empty DataFrames from Python models; the generator
         # protocol signals "no rows" without the "Cannot construct source query"
@@ -112,6 +120,9 @@ def execute(
             "source_transaction_id": lot.source_transaction_id,
             "acquisition_type": lot.acquisition_type,
             "cost_basis_method": lot.cost_basis_method,
+            "reconciliation_status": account_reconciliation.get(
+                lot.account_id, "reconciled"
+            ),
             "currency_code": lot.currency_code,
             "original_quantity": lot.original_quantity,
             "remaining_quantity": lot.remaining_quantity,
@@ -135,6 +146,7 @@ def execute(
         pa.field("source_transaction_id", pa.string()),
         pa.field("acquisition_type", pa.string()),
         pa.field("cost_basis_method", pa.string()),
+        pa.field("reconciliation_status", pa.string()),
         pa.field("currency_code", pa.string()),
         pa.field("original_quantity", pa.decimal128(28, 10)),
         pa.field("remaining_quantity", pa.decimal128(28, 10)),
