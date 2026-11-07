@@ -1,3 +1,4 @@
+<!-- Last reviewed: 2026-11-07 -->
 # Choosing a bank connection
 
 Choose a connection by institution, account type, data coverage, and cost.
@@ -113,6 +114,22 @@ or SimpleFIN setup tokens into commands or an agent conversation.
 
 - [Plaid setup](data-import.md#live-banking-sync-plaid)
 - [SimpleFIN setup, recovery, and revocation](data-import.md#simplefin-sync)
+
+## Aggregator access is not guaranteed
+
+As of November 2026, two facts outside MoneyBin's control bear on any aggregator
+connection. The CFPB's Section 1033 open-banking rule, which would have required
+US banks to provide consumer data access at no charge, was preliminarily enjoined
+on October 29, 2025 in *Forcht Bank v. CFPB* (E.D. Ky.) and is under
+reconsideration by the CFPB. Separately, JPMorgan Chase began charging aggregators
+for data access in 2025, signing agreements with Plaid in September and with
+Yodlee, Morningstar, and Akoya in November. Whether either reaches a user as a
+fee, a slower connection, or a dropped institution depends on the aggregator and
+the connection operator. [File import](data-import.md) depends on neither: it
+reads the statement or export your institution already provides. Sources:
+[CFPB rule page](https://www.consumerfinance.gov/rules-policy/final-rules/required-rulemaking-on-personal-financial-data-rights/),
+[ABA Banking Journal on the injunction](https://bankingjournal.aba.com/2025/11/kentucky-federal-court-enjoins-cfpb-from-enforcing-current-1033-final-rule/),
+[CNBC on the access agreements](https://www.cnbc.com/2025/11/14/jpmorgan-chase-fintech-fees.html).
 
 ## Maintaining this comparison
 

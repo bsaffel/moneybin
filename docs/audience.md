@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-14 -->
+<!-- Last reviewed: 2026-11-07 -->
 # Who MoneyBin Is For
 
 MoneyBin is built for a specific set of people. This page tells you whether you're one of them — honestly, including who you should use instead if you're not.
@@ -45,6 +45,7 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 - MCP and CLI preserve capability and service-outcome parity without requiring
   1:1 methods; `--output json` keeps the CLI a first-class agent surface.
 - The agent answers with SQL it wrote against canonical fact and dimension tables — and you can read that SQL and verify it.
+- Anthropic's own Personal Finance feature cannot be used from Claude Code, scheduled tasks, or Cowork ([Anthropic's help article](https://support.claude.com/en/articles/18185620-use-personal-finance-in-claude)). MoneyBin attaches to a Claude Code session with `make claude-mcp` and answers there, with the SQL.
 - Built to be *extended* by the agent, not only queried. The schema and the import pipeline are stable surfaces an agent can build against today; a declarative report contract and the broader extension contract are in flight.
 
 **What's still rough:** Today's MCP transport requires the AI client and MoneyBin to run on the same machine. Remote-client support (so ChatGPT web or a hosted assistant can reach a MoneyBin running elsewhere) is planned.
@@ -92,15 +93,15 @@ These are the people MoneyBin is being built for but doesn't fully serve yet. No
 
 **What's still rough:** No production web UI yet. A CLI/MCP review queue exists for the AI-categorization workflow; there is no web surface yet. **Stay on Monarch or Copilot until the web UI ships.**
 
-### The ChatGPT finance user
+### The ChatGPT or Claude finance user
 
-**Stack:** ChatGPT Plus or Pro. Tried Finances in ChatGPT with a linked bank feed, liked asking about money in plain language, and noticed the feed now lives in a vendor's database.
+**Stack:** ChatGPT Plus or Pro, or Claude Pro, Max, or Ultra. Tried Finances in ChatGPT or Personal Finance in Claude with a linked bank feed, liked asking about money in plain language, and noticed the feed now lives in a vendor's database.
 
 **Job to be done:** The same conversation about their money, with the data in a file they hold.
 
-**Why MoneyBin will fit:** The ChatGPT desktop app already drives MoneyBin over MCP, so the assistant answers from an encrypted file on your machine. The model still sees the rows it asks for. Import from OFX, QFX, or CSV and nobody but you keeps the feed. Turn on Plaid sync and Plaid keeps it too; the [threat model](guides/threat-model.md#plaid-itself-when-you-use-bank-direct-sync) says exactly what it holds.
+**Why MoneyBin will fit:** The ChatGPT desktop app and Claude Desktop already drive MoneyBin over MCP, so the assistant answers from an encrypted file on your machine. The model still sees the rows it asks for. Import from OFX, QFX, or CSV and nobody but you keeps the feed. Turn on Plaid sync and Plaid keeps it too; the [threat model](guides/threat-model.md#plaid-itself-when-you-use-bank-direct-sync) says exactly what it holds. Personal Finance in Claude reads up to 16 banks and 24 months of history, and its dashboard is not in Claude's data export; MoneyBin's import has no bank cap or history window, and the database is a file you already hold.
 
-**What's still rough:** Install is `git clone` + `uv`, there is no web UI, and ChatGPT on the web cannot reach a local MoneyBin. Web UI and remote-client support are planned. **If zero setup matters more than who holds the feed, [Finances in ChatGPT](https://help.openai.com/en/articles/20001222-finances-in-chatgpt) is the right answer today.**
+**What's still rough:** Install is `git clone` + `uv`, there is no web UI, and neither ChatGPT on the web nor claude.ai can reach a local MoneyBin. Web UI and remote-client support are planned. **If zero setup matters more than who holds the feed, [Finances in ChatGPT](https://help.openai.com/en/articles/20001222-finances-in-chatgpt) or [Personal Finance in Claude](https://support.claude.com/en/articles/18185620-use-personal-finance-in-claude) is the right answer today.**
 
 ### The FIRE / wealth-builder
 
