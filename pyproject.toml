@@ -75,7 +75,7 @@ dependencies = [
     "httplib2>=0.32.1",
     # Data validation and utilities
     "pydantic>=2.13.5",
-    "pydantic-settings>=2.15.0",  # GHSA-4xgf-cpjx-pc3j — fixed in 2.14.2
+    "pydantic-settings>=2.16.2",  # GHSA-4xgf-cpjx-pc3j — fixed in 2.14.2
     "python-dateutil>=2.9.0.post0",
     "pyyaml>=6.0.3",
     # Modern CLI framework.
