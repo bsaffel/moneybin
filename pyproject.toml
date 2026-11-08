@@ -111,7 +111,7 @@ dependencies = [
     "pillow>=13.0.0",
     "anyio>=4.15.1",
     "soupsieve>=3.0.4",
-    "starlette>=1.8.0",
+    "starlette>=1.10.0",
     "certifi>=2026.10.19",
     # Secret management and key derivation
     "keyring>=25.7.0",
