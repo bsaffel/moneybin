@@ -11,7 +11,7 @@ MoneyBin's CLI covers everything its MCP server does. Read commands return text 
 
 This page covers the full user-facing surface. Per-command flag detail lives in `moneybin <cmd> --help`. `--help` is always side-effect free — it does not touch profiles, open the database, or hit the network.
 
-**Eleven commands are stubs hidden from `--help`**, so the CLI never advertises what it cannot do: `budget set`/`delete`, `sync key rotate`, `sync schedule set`/`show`/`remove`, `transactions categorize ml train`/`status`/`apply`, and `db key export`/`import`. Each stays invocable, so a script that already calls one keeps working; the first nine exit `0` and the two `db key` names exit `1`.
+**Eight commands are stubs hidden from `--help`**, so the CLI never advertises what it cannot do: `budget set`/`delete`, `sync key rotate`, `transactions categorize ml train`/`status`/`apply`, and `db key export`/`import`. Each stays invocable, so a script that already calls one keeps working; the first six exit `0` and the two `db key` names exit `1`.
 
 ## Standard flags
 
@@ -250,9 +250,38 @@ SimpleFIN disconnect requires separate grant revocation in Bridge; imported
 local history is preserved.
 
 The SimpleFIN implementation is in progress for Early Access; deployment and
-non-author live acceptance are separate gates. `sync key rotate` and the
-`sync schedule` commands are stubs hidden from `--help`. Commands:
+non-author live acceptance are separate gates. `sync key rotate` remains
+a stub hidden from `--help`. Commands:
 [`reference/cli/sync.md`](../reference/cli/sync.md).
+
+### Desktop schedules
+
+`sync schedule set --time HH:MM`, `show`, and `remove` manage one native daily
+job per MoneyBin home and profile. Scheduling is in progress: native desktop
+lifecycle acceptance remains incomplete.
+The current checkpoint is not ready for unattended financial work.
+
+The job follows local wall-clock time in a logged-in desktop session. macOS uses
+an Aqua LaunchAgent; Linux uses a systemd user timer and service tied to
+`graphical-session.target`. No wake, cron fallback, or automatic retry is added.
+The nominal next run does not promise session, credential, or network availability.
+
+Scheduled pulls require stock macOS Keychain or Linux Secret Service credentials.
+They refuse locked or unsupported stores without prompts, unlocking, or environment
+fallback. On macOS every listed file keychain must be unlocked, including unrelated
+stores; an unknown lock state also refuses access. Recover credentials manually.
+An OS lock racing an authorized mutation can leave partial credential changes and
+a failed attempt; the existing token publication checks refuse mixed pairs.
+
+The macOS login check skips nonexistent local timestamps during a daylight-saving
+transition; native calendar delivery remains authoritative. Repeated local dates
+or times cannot claim the same daily occurrence twice.
+
+`show --output json` reports `absent`, `installed`, `inactive-session`, `running`,
+`stale`, or `partial`, plus a bounded latest-attempt summary. A failed attempt is
+consumed. Use a manual `sync pull` for an additional attempt; manual work leaves
+the scheduler's claim unchanged. Remove the schedule before deleting its profile;
+an explicit stale profile name still works with `show` and `remove`.
 
 **Related guides:** [`data-import.md`](data-import.md), [`data-pipeline.md`](data-pipeline.md).
 

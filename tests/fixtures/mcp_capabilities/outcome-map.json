@@ -1008,6 +1008,31 @@
     "exemption": null
   },
   {
+    "capability_id": "sync.schedule",
+    "mcp_tools": [],
+    "cli_commands": [
+      "sync schedule set",
+      "sync schedule show",
+      "sync schedule remove",
+      "sync schedule _run"
+    ],
+    "service_methods": [
+      "moneybin.services.sync_schedule.SyncScheduleService.set",
+      "moneybin.services.sync_schedule.SyncScheduleService.show",
+      "moneybin.services.sync_schedule.SyncScheduleService.remove",
+      "moneybin.services.sync_schedule.SyncScheduleService.run"
+    ],
+    "observable_outcomes": [
+      "one owned daily desktop job per home and profile, with explicit stale and partial states",
+      "durable coalesced attempt claims and bounded full-command completion receipts"
+    ],
+    "exemption": {
+      "surface": "mcp",
+      "category": "admission-pending",
+      "reason": "sync-overview.md Phase 2 keeps scheduling CLI-only until its bounded MCP capability is separately admitted under mcp-tool-surface-scaling.md; the admission record is outstanding. The hidden runner remains an internal revision-bound native callback."
+    }
+  },
+  {
     "capability_id": "sync.disconnect",
     "mcp_tools": [
       "sync_disconnect"

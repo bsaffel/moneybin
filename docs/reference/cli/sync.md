@@ -18,6 +18,7 @@ Usage: `moneybin sync [OPTIONS] COMMAND [ARGS]...`
 | [`moneybin sync disconnect`](#moneybin-sync-disconnect) | Remove a bank connection, keeping or purging its local rows. |
 | [`moneybin sync pull`](#moneybin-sync-pull) | Pull data from connected institutions. |
 | [`moneybin sync status`](#moneybin-sync-status) | Show connected institutions, last sync times, and health. |
+| [`moneybin sync schedule`](#moneybin-sync-schedule) | Manage scheduled sync jobs |
 
 ## moneybin sync login
 
@@ -135,3 +136,54 @@ Usage: `moneybin sync status [OPTIONS]`
 | `--wide` | flag |  | Render every column, not just the default set. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `--json-fields` | text |  | Comma-separated field projection (json output only). Available: id, provider_item_id, institution_name, provider, status, last_sync, created_at, error_code, guidance |
+
+## moneybin sync schedule
+
+Manage scheduled sync jobs
+
+Usage: `moneybin sync schedule [OPTIONS] COMMAND [ARGS]...`
+
+**Commands**
+
+| Command | Purpose |
+|---|---|
+| [`moneybin sync schedule set`](#moneybin-sync-schedule-set) | Install daily sync schedule. |
+| [`moneybin sync schedule show`](#moneybin-sync-schedule-show) | Show current schedule details. |
+| [`moneybin sync schedule remove`](#moneybin-sync-schedule-remove) | Uninstall scheduled sync job. |
+
+## moneybin sync schedule set
+
+Install daily sync schedule.
+
+Usage: `moneybin sync schedule set [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--time` | text |  | Required. Daily local time, HH:MM (24-hour). |
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+
+## moneybin sync schedule show
+
+Show current schedule details.
+
+Usage: `moneybin sync schedule show [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+
+## moneybin sync schedule remove
+
+Uninstall scheduled sync job.
+
+Usage: `moneybin sync schedule remove [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |

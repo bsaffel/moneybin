@@ -168,7 +168,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- pull [--force] [--institution NAME] -- Pull data + full pipeline
 |   +-- status                     -- Connected institutions, health, errors
 |   +-- schedule
-|   |   +-- set --time HH:MM      -- Install daily sync (launchd/cron)
+|   |   +-- set --time HH:MM      -- Install daily sync (launchd/systemd)
 |   |   +-- show                   -- Current schedule details
 |   |   +-- remove                 -- Uninstall scheduled job
 |   +-- key

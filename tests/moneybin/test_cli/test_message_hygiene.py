@@ -47,7 +47,6 @@ ALL_STUB_COMMANDS = STUB_COMMANDS + EXIT_ONE_STUB_COMMANDS
 STUB_GROUPS = (
     "budget",
     "sync key",
-    "sync schedule",
     "transactions categorize ml",
 )
 
@@ -135,6 +134,18 @@ def test_group_with_a_working_command_stays_visible(path: str) -> None:
     assert any(not command.hidden for command in group.commands.values()), (
         f"`{path}` was expected to hold at least one visible command"
     )
+
+
+def test_implemented_schedule_help_advertises_controls_and_hides_runner() -> None:
+    """Working schedule controls replace the old stub-only group contract."""
+    parent = runner.invoke(app, ["sync", "--help"])
+    assert parent.exit_code == 0, parent.output
+    assert "schedule" in parent.stdout
+    result = runner.invoke(app, ["sync", "schedule", "--help"])
+    assert result.exit_code == 0, result.output
+    for command in ("set", "show", "remove"):
+        assert command in result.stdout
+    assert "_run" not in result.stdout
 
 
 @pytest.mark.parametrize("path", PARTIALLY_IMPLEMENTED_COMMANDS)

@@ -165,13 +165,18 @@ def test_registration_inventory_keeps_generated_reports_aliases_and_no_assets_le
     None
 ):
     """An accidental registration change must not evade the hand-written help list."""
-    leaves = set(_leaves(get_command(app)))
+    root = get_command(app)
+    leaves = set(_leaves(root))
 
-    assert len(leaves) == 211
+    assert len(leaves) == 212
     assert ("assets",) not in leaves
     assert {
         ("sync", "connect"),
         ("sync", "connect-status"),
+        ("sync", "schedule", "set"),
+        ("sync", "schedule", "show"),
+        ("sync", "schedule", "remove"),
+        ("sync", "schedule", "_run"),
         ("reports", "spending-trend"),
         ("reports", "cash-flow"),
         ("reports", "recurring-subscriptions"),
@@ -185,6 +190,16 @@ def test_registration_inventory_keeps_generated_reports_aliases_and_no_assets_le
         ("mcp", "config", "path"),
         ("logs",),
     } <= leaves
+    assert isinstance(root, TyperGroup)
+    sync = root.commands["sync"]
+    assert isinstance(sync, TyperGroup)
+    schedule = sync.commands["schedule"]
+    assert isinstance(schedule, TyperGroup)
+    assert not schedule.hidden
+    assert {
+        name for name, command in schedule.commands.items() if not command.hidden
+    } == {"set", "show", "remove"}
+    assert schedule.commands["_run"].hidden
 
 
 def test_every_declared_finite_read_keeps_the_shared_human_and_agent_controls() -> None:
@@ -318,9 +333,6 @@ def test_every_declared_finite_read_keeps_the_shared_human_and_agent_controls() 
             budget delete
             budget set
             sync key rotate
-            sync schedule remove
-            sync schedule set
-            sync schedule show
             transactions categorize ml apply
             transactions categorize ml status
             transactions categorize ml train
@@ -395,6 +407,10 @@ def test_every_declared_finite_read_keeps_the_shared_human_and_agent_controls() 
             sync login
             sync logout
             sync pull
+            sync schedule remove
+            sync schedule set
+            sync schedule show
+            sync schedule _run
             synthetic generate
             synthetic reset
             system audit get

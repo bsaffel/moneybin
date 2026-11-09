@@ -62,7 +62,10 @@ def _resolve_privacy_log_dir() -> Path:
         # No profile resolved — fall back to base dir. Single-user
         # bootstrap path before a profile is set.
         return base
-    return base / "profiles" / profile
+    profile_dir = base / "profiles" / profile
+    # Recovery surfaces can intentionally select a deleted profile without
+    # resolving it. Auditing that inspection must not recreate the profile.
+    return profile_dir if profile_dir.is_dir() else base
 
 
 def _today_utc() -> str:
