@@ -391,7 +391,7 @@ are in the [`privacy` CLI reference](../reference/cli/privacy.md).
   built from its own [Personal Finance feature](https://support.claude.com/en/articles/18185620-use-personal-finance-in-claude),
   that a published artifact stays until you delete it, even after the chat is
   deleted. Treat an artifact built from MoneyBin tool results the same way:
-  deleting the conversation does not delete it.
+  deleting the conversation may not delete it.
 
 ---
 

@@ -154,7 +154,7 @@ These resolve to `claude --mcp-config <profile-config-path>`, attaching MoneyBin
 
 Inside a `make claude-mcp` session, the `/mcp` slash command shows MoneyBin's tool list as a quick sanity check.
 
-**Claude's built-in Personal Finance feature does not reach here.** Anthropic's [help article](https://support.claude.com/en/articles/18185620-use-personal-finance-in-claude) states that linked bank accounts cannot be used in Claude Code, scheduled tasks, or Cowork. A `make claude-mcp` session is how bank data gets into a Claude Code conversation, and the data stays in your profile's encrypted file.
+**Claude's built-in Personal Finance feature does not reach here.** Anthropic's [help article](https://support.claude.com/en/articles/18185620-use-personal-finance-in-claude) states that linked bank accounts cannot be used in Claude Code, scheduled tasks, or Cowork. A `make claude-mcp` session is one way bank data gets into a Claude Code conversation, and the data stays in your profile's encrypted file.
 
 ### Cursor
 

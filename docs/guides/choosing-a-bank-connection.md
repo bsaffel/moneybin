@@ -122,8 +122,8 @@ connection. The CFPB's Section 1033 open-banking rule, which would have required
 US banks to provide consumer data access at no charge, was preliminarily enjoined
 on October 29, 2025 in *Forcht Bank v. CFPB* (E.D. Ky.) and is under
 reconsideration by the CFPB. Separately, JPMorgan Chase began charging aggregators
-for data access in 2025, signing agreements with Plaid in September and with
-Yodlee, Morningstar, and Akoya in November. Whether either reaches a user as a
+for data access in 2025, signing agreements with Plaid in September 2025 and with
+Yodlee, Morningstar, and Akoya in November 2025. Whether either reaches a user as a
 fee, a slower connection, or a dropped institution depends on the aggregator and
 the connection operator. [File import](data-import.md) depends on neither: it
 reads the statement or export your institution already provides. Sources:
