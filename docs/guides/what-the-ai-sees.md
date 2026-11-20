@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-27 -->
+<!-- Last reviewed: 2026-11-07 -->
 # What the AI Provider Sees
 
 When you drive MoneyBin with an AI agent, some of your financial data reaches
@@ -379,6 +379,19 @@ are in the [`privacy` CLI reference](../reference/cli/privacy.md).
   override those terms. If a question would be regrettable in your provider's
   hands, the recall story is the same as for any chat: there is none. Ask the CLI
   instead (no model in the loop), or use a local model.
+- **On Claude, tool results are connector content.** Anthropic's [training
+  policy](https://privacy.claude.com/en/articles/10023580-is-my-data-used-for-model-training)
+  excludes "raw content from connectors (e.g. Google Drive), including remote and
+  local MCP servers" from model training, so a MoneyBin tool result on Claude is
+  not training data. Two bounds: content you paste into the chat yourself is not
+  covered by that exclusion, and the tool results stay in your chat history under
+  Anthropic's retention terms. For every other provider, the bullet above governs.
+- **Artifacts outlive the chat.** A chart or table your client renders from tool
+  results into an artifact is a separate object. Anthropic documents, for artifacts
+  built from its own [Personal Finance feature](https://support.claude.com/en/articles/18185620-use-personal-finance-in-claude),
+  that a published artifact stays until you delete it, even after the chat is
+  deleted. Treat an artifact built from MoneyBin tool results the same way:
+  deleting the conversation may not delete it.
 
 ---
 
