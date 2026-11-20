@@ -1311,7 +1311,9 @@ def test_the_declared_uncategorized_column_gets_the_placeholder() -> None:
         output=OutputFormat.TEXT,
     )
 
-    assert view.placeholder == Placeholder("category", UNCATEGORIZED_LABEL)
+    assert view.placeholder == Placeholder(
+        "category", UNCATEGORIZED_LABEL, show_count=False
+    )
 
 
 def test_an_undeclared_category_column_gets_no_placeholder() -> None:
@@ -1396,9 +1398,9 @@ def _invoke_spend(records: list[dict[str, Any]], display_currency: str | None):
         return _runner_cli.invoke(app, ["wide"], env={"COLUMNS": "200"})
 
 
-def _spend_row(category: str | None) -> dict[str, Any]:
+def _spend_row(category: str | None, year_month: str = "2025-11") -> dict[str, Any]:
     row: dict[str, Any] = dict.fromkeys(_WIDE_COLUMN_NAMES, "x")
-    row.update(category=category, currency_code="USD", year_month="2025-11")
+    row.update(category=category, currency_code="USD", year_month=year_month)
     return row
 
 
@@ -1411,14 +1413,17 @@ def test_the_dropped_currency_is_named_beneath_the_table() -> None:
     assert "amounts in USD" in result.output
 
 
-def test_a_null_category_renders_as_uncategorized_in_a_report() -> None:
-    """A NULL category is a taxonomy gap, not a blank — same word `transactions list` uses."""
+def test_report_labels_uncategorized_periods_without_counting_them() -> None:
     result = _invoke_spend(
-        [_spend_row("Food"), _spend_row(None)], display_currency="USD"
+        [_spend_row(None, "2025-11"), _spend_row(None, "2025-12")],
+        display_currency="USD",
     )
 
     assert result.exit_code == 0, result.output
-    assert "Uncategorized" in result.output
+    assert result.output.count("Uncategorized") == 2
+    assert "3 of 7 columns shown" in result.output
+    assert "amounts in USD" in result.output
+    assert "uncategorized" not in result.output
 
 
 def _invoke_wide(*args: str) -> Result:

@@ -306,6 +306,7 @@ class Placeholder:
 
     column: str
     value: str
+    show_count: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -593,11 +594,8 @@ def build_rows(
     not thought about paging discloses the slice without promising more.
 
     ``placeholder`` declares what an absent value renders as, and in which
-    column. The caller passes the stored value through; this renderer
-    substitutes and counts the substitutions on the same line (requirement
-    30). Both widen requirement 10's trigger: framing is not only about
-    omitted columns, so a complete projection under ``--wide`` still discloses
-    a taxonomy gap.
+    column. When ``show_count`` is set, the framing line counts substitutions
+    even when every column is visible (requirement 30).
 
     ``optional`` names the columns a ``--wide`` view may omit when the whole
     projection is wider than the terminal, listed most important first; the
@@ -773,7 +771,9 @@ def build_rows(
     # Counted off the kept columns, not the caller's whole projection: the
     # disclosure is about what this table shows, and a placeholder in a column
     # the fit dropped is not on screen to be misread.
-    count_absent = absent_at is not None and absent_at in kept
+    count_absent = (
+        placeholder is not None and placeholder.show_count and absent_at in kept
+    )
     rendered = 0
     flagged = 0
     for cells, absent in cells_source:
