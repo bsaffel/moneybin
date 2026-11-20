@@ -1559,6 +1559,28 @@ def bootstrap_cases_template(
     )
     # NULL held quantity: unknowable position → review, never a silent drop.
     _raw_holding(db, security_id="sec_nq", quantity=None, cost_basis="100.00")
+    _raw_holding(db, security_id="sec_negative_qty", quantity="-1")
+    for key in ("sec_zero", "sec_zero_short", "sec_zero_split", "sec_zero_sold"):
+        _raw_holding(db, security_id=key, quantity="0", cost_basis="0")
+    _raw_lot(db, "sec_zero_short", 0, quantity="1", position_type="SHORT")
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="zero_split",
+        security_id="sec_zero_split",
+        quantity="2",
+        amount="0",
+        investment_transaction_type="transfer",
+        investment_transaction_subtype="split",
+    )
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="zero_sold",
+        security_id="sec_zero_sold",
+        quantity="-1",
+        amount="-10",
+        investment_transaction_type="sell",
+        investment_transaction_subtype="sell",
+    )
     _raw_holding(
         db,
         security_id="mb21_sold_anchor",
@@ -1878,13 +1900,40 @@ def test_case_e_split_and_guards_route_to_review(bootstrap_cases: Database) -> N
     assert not {"sec_a", "sec_b", "sec_c", "sec_d", "sec_ng"} & set(reasons)
 
 
+@pytest.mark.parametrize(
+    ("security_key", "reason"),
+    [
+        ("sec_zero", None),
+        ("sec_zero_short", "short_or_nonpositive"),
+        ("sec_negative_qty", "short_or_nonpositive"),
+        ("sec_nq", "short_or_nonpositive"),
+        ("sec_zero_split", "in_window_split"),
+        ("sec_zero_sold", "negative_gap"),
+    ],
+)
+def test_closed_and_unknown_opening_positions(
+    bootstrap_cases: Database, security_key: str, reason: str | None
+) -> None:
+    assert _opening(bootstrap_cases, security_key) == []
+    rows = bootstrap_cases.execute(
+        "SELECT reason FROM prep.stg_plaid__opening_lot_review WHERE source_security_key = ?",
+        [security_key],
+    ).fetchall()
+    assert rows == ([] if reason is None else [(reason,)])
+    result = DoctorService(bootstrap_cases)._run_opening_lot_review()  # pyright: ignore[reportPrivateUsage]
+    affected = [
+        row for row in result.affected_ids if row.startswith(f"acc_1:{security_key} (")
+    ]
+    assert affected == ([] if reason is None else [f"acc_1:{security_key} ({reason})"])
+
+
 @pytest.mark.slow
 def test_sold_out_prewindow_position_routes_to_review(
     bootstrap_cases: Database,
 ) -> None:
     """A fully-sold pre-window position has no holdings row in any snapshot.
 
-    Plaid never reports closed positions. Without an explicit check it reaches
+    A broker can omit a closed position. Without an explicit check it reaches
     neither stg_plaid__opening_lots (nothing to draw from -- it never enters
     int_plaid__opening_positions) nor stg_plaid__opening_lot_review, and becomes
     a silent zero-basis oversold disposal instead of a visible gap.

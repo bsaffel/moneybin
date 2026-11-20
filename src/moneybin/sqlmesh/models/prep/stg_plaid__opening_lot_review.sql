@@ -9,16 +9,16 @@ MODEL (
 
    Reasons:
      short_or_nonpositive — a short lot (the engine models only long lots) or a
-                            held quantity that is <= 0 or absent
+                            negative or unknown held quantity
      in_window_split      — the gap is measured post-split but a synthetic row is
                             dated pre-window, so the engine would re-apply the
                             multiplier and double-scale the opened quantity
-     negative_gap         — the ledger shows MORE shares than are held (a disposal
-                            Plaid dropped from the window); never silently adjusted
+     negative_gap         — the ledger shows more shares than are held, or a
+                            closed position's net disposals lack opening shares
      sold_out_prewindow   — an in-window sell/transfer_out for a position with NO
-                            holdings row in ANY snapshot; Plaid never reports closed
-                            positions, so a pre-window position fully sold before the
-                            first snapshot never reaches int_plaid__opening_positions
+                            holdings row in ANY snapshot; a broker can omit closed
+                            positions, so a position fully sold before the first
+                            snapshot can be absent from int_plaid__opening_positions
                             and would otherwise appear in neither this view nor
                             stg_plaid__opening_lots — a zero-basis oversold disposal
                             that basis_incomplete flags downstream but never explains
@@ -33,15 +33,16 @@ WITH guard_reasons AS (
     p.source_security_key,
     p.source_origin,
     CASE
-      WHEN p.is_short_or_nonpositive
+      WHEN p.has_short_lot OR p.held_qty < 0 OR p.held_qty IS NULL
       THEN 'short_or_nonpositive'
       WHEN p.has_in_window_split
       THEN 'in_window_split'
-      ELSE 'negative_gap'
+      WHEN p.gap_qty < 0 OR (
+        p.held_qty = 0 AND p.in_window_net < 0
+      )
+      THEN 'negative_gap'
     END AS reason
   FROM prep.int_plaid__opening_positions AS p
-  WHERE
-    p.is_short_or_nonpositive OR p.has_in_window_split OR p.gap_qty < 0
 ), first_snapshot_window AS (
   /* The item's window boundary, taken from its FIRST snapshot RECEIPT — never from
      holdings rows. transactions_window_start is item-level metadata (constant per
@@ -68,8 +69,8 @@ WITH guard_reasons AS (
   WHERE
     snapshot_rank = 1
 ), sold_out_prewindow AS (
-  /* A pre-window position fully sold before the FIRST snapshot leaves NO holdings
-     row in ANY snapshot — Plaid never reports closed positions. Scoped to
+  /* A pre-window position fully sold before the FIRST snapshot can leave NO holdings
+     row in ANY snapshot. Scoped to
      sell/transfer_out (cost_basis.py's _DISPOSAL_TYPES) since those are the events
      that need an open lot to draw from; a disposal with nothing in the snapshot to
      explain it is exactly the silent-zero-basis case this view exists to surface. */
@@ -98,6 +99,8 @@ WITH guard_reasons AS (
   SELECT
     *
   FROM guard_reasons
+  WHERE
+    NOT reason IS NULL
   UNION ALL
   SELECT
     *
