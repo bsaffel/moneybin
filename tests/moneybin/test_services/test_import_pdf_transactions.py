@@ -32,7 +32,7 @@ from moneybin.services.import_confirmation import (
     ImportConfirmationRequiredError,
     SignConventionProposal,
 )
-from moneybin.services.import_service import ImportService
+from moneybin.services.import_service import ImportResult, ImportService
 from tests.import_helpers import import_answering_gate
 from tests.moneybin.db_helpers import create_core_tables
 from tests.moneybin.pdf_statement_fixtures import (
@@ -3445,3 +3445,20 @@ def test_a_borrowed_pin_key_survives_reimporting_the_same_regenerated_statement(
         "ORDER BY transaction_id"
     ).fetchall()
     assert not forked, f"the statement landed under two source keys: {forked}"
+
+
+@pytest.mark.parametrize(
+    ("file_type", "details", "expected"),
+    [
+        ("ofx", {}, True),
+        ("tabular", {}, True),
+        ("pdf", {"transactions_extracted": 3}, True),
+        ("pdf", {"transactions_extracted": 0}, False),
+        ("pdf", {}, False),
+    ],
+)
+def test_import_result_needs_refresh(
+    file_type: str, details: dict[str, int], expected: bool
+) -> None:
+    result = ImportResult(file_path="f", file_type=file_type, details=details)
+    assert result.needs_refresh is expected
