@@ -1043,10 +1043,11 @@ anchored to an earlier item receipt that contains no holdings for it.
 `core.fct_investment_transactions` (`source_type='plaid'`,
 `subtype='opening_bootstrap'`, never confused with a real ACATS transfer):
 
-1. **Guards** (route to `system doctor` review, synthesize nothing):
-   `position_type='short'` or `H ≤ 0` — the engine models only long lots, so a
-   buy-to-cover would open a long lot that never reconciles to a short `H`; or
-   the security has any in-window `split` (see below).
+1. **Guards.** Synthesize opening lots only for positive held quantities.
+   A short lot, negative or unknown held quantity, or in-window split routes
+   the position to `system doctor` review. A known zero alone describes a
+   closed position. If that position has unmatched in-window share activity,
+   doctor reports `negative_gap` for reconciliation.
 2. **Gap** `G = H − (in-window net signed transaction quantity)`, with `split`
    rows **excluded** from the sum (their `quantity` is a multiplier, not shares).
    Bootstrap fires only when `G > 0`.
@@ -1091,9 +1092,9 @@ security has an in-window `split`: that `(account, security)` is routed to
 `system doctor` review instead of synthesizing a row. A documented, visible v1
 limitation — like the cancel/removal boundary above — not silent corruption.
 
-**Fully-sold pre-window positions route to review, too.** Plaid never reports a
-*closed* position, so a pre-window position that was fully sold before the first
-snapshot leaves **no** `raw.plaid_investment_holdings` row at all — it never
+**Fully-sold pre-window positions route to review, too.** A broker can omit
+a closed position entirely. A position fully sold before the first snapshot
+can therefore leave **no** `raw.plaid_investment_holdings` row at all — it never
 reaches the guards above (they all key off a holdings row) and, without an
 explicit check, would sail past both `stg_plaid__opening_lots` and
 `stg_plaid__opening_lot_review` invisibly: the in-window sell finds no lot to
