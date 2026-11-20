@@ -609,6 +609,16 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
 
         from moneybin.investments.freshness import require_current_query
 
+        # sqlglot logs the SQL during scope traversal, then asserts in qualify()
+        # because the aliased UNPIVOT body is not a Selectable.
+        for subquery in tree.find_all(exp.Subquery):
+            source = subquery.unnest()
+            if subquery.alias and isinstance(source, exp.Pivot) and source.unpivot:
+                raise UserError(
+                    "Aliased standalone UNPIVOT queries are unsupported.",
+                    code=error_codes.SQL_INVALID_QUERY,
+                )
+
         require_current_query(db, query)
         qtree = expand_star(tree, snapshot)
         _refuse_disallowed_schemas(qtree, snapshot)
