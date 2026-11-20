@@ -352,6 +352,7 @@ class TestSpecificCodes:
             "infra_not_found",
             "infra_file_not_found",
             "sync_error",
+            "sync_schedule_error",
             "gsheet_error",
         ],
     )

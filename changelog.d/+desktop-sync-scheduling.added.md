@@ -1,0 +1,1 @@
+Add CLI-only `sync schedule set --time HH:MM`, `show`, and `remove` for profile-bound desktop-session jobs, with durable attempt claims, bounded completion summaries, and guarded macOS Keychain/Linux Secret Service access without prompts or environment fallback. Native desktop lifecycle acceptance remains in progress.

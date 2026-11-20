@@ -126,10 +126,11 @@ def _same_server(effective: str, url: str) -> bool:
         return False
 
 
-def _new_client(server_url: str) -> SyncClient:
+def _new_client(server_url: str, *, profile_id: str | None = None) -> SyncClient:
     # Scope the broker identity to the active profile so each profile
     # authenticates as a distinct user.
-    profile_id = get_or_create_profile_id(get_settings().profile_dir)
+    if profile_id is None:
+        profile_id = get_or_create_profile_id(get_settings().profile_dir)
     return SyncClient(server_url=server_url, profile_id=profile_id)
 
 
@@ -139,7 +140,7 @@ def _clear_credentials(client: SyncClient) -> None:
     SyncAuthService(client=client).logout()
 
 
-def build_sync_client() -> SyncClient:
+def build_sync_client(*, profile_id: str | None = None) -> SyncClient:
     """Construct a SyncClient for the configured address."""
     server_url = get_settings().sync.server_url
     # Falsy, not None: a blank override line must not build a hostless client.
@@ -154,7 +155,12 @@ def build_sync_client() -> SyncClient:
         )
     # Normalized so the issuer recorded beside a token pair matches however
     # the override happens to spell the same server.
-    return _new_client(normalize_server_url(server_url))
+    server_url = normalize_server_url(server_url)
+    return (
+        _new_client(server_url, profile_id=profile_id)
+        if profile_id is not None
+        else _new_client(server_url)
+    )
 
 
 def plan_server_address(raw: str, *, surface: Surface = "cli") -> AddressPlan:
