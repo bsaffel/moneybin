@@ -15,7 +15,7 @@ The standard registry exposes 50 tools. Each entry below is the tool's client-vi
 | [`export_run`](#export_run) | Publish one canonical bundle or registered report to a named local or Sheets destination. | write, not idempotent, open world | at least `medium` |
 | [`exports_set`](#exports_set) | Assert one named export destination's local or Sheets target state. | write, destructive, idempotent, open world | at least `medium` |
 | [`gsheet`](#gsheet) | Read connections or connection health. | read-only, idempotent | up to `medium` |
-| [`gsheet_connect`](#gsheet_connect) | Authenticate, connect, or reconnect in one mode-aware workflow. | write, not idempotent, open world | up to `medium` |
+| [`gsheet_connect`](#gsheet_connect) | Connect a sheet with url, reconnect with connection_id, or omit both to authenticate only. | write, not idempotent, open world | up to `medium` |
 | [`gsheet_disconnect`](#gsheet_disconnect) | Soft-disconnect or exactly confirm a permanent purge. | write, destructive, not idempotent, open world | up to `medium` |
 | [`gsheet_pull`](#gsheet_pull) | Pull one or all connections. | write, not idempotent, open world | at least `medium` |
 | [`identity_links_decide`](#identity_links_decide) | Atomically accept or reject account, merchant, and security identity link decisions. | write, destructive, idempotent | at least `medium` |
@@ -242,7 +242,7 @@ Access: read-only, idempotent. Sensitivity: up to `medium`.
 
 ### gsheet_connect
 
-Authenticate, connect, or reconnect in one mode-aware workflow. Naming an account is required only when the sheet has no account column: omit account_id and account_name for a sheet that names its own accounts, and each row is filed under the account it names.
+Connect a sheet with url, reconnect with connection_id, or omit both to authenticate only. Passing both is an error. Naming an account is required only when the sheet has no account column: omit account_id and account_name for a sheet that names its own accounts, and each row is filed under the account it names.
 
 Access: write, not idempotent, open world. Sensitivity: up to `medium`.
 

@@ -1,0 +1,1 @@
+The `gsheet_connect` tool description explains which arguments connect a sheet, reconnect an existing connection, or authenticate only. It also identifies the conflict when both selectors are supplied.
