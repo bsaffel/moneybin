@@ -565,7 +565,7 @@ def mcp_tool(
             For dynamic_classification tools, reads sensitivity and classes from
             the envelope itself (set by the tool per call). For static tools,
             sensitivity is also read off the envelope — every call site below
-            passes it through ``_stamp_sensitivity`` first, so this always sees
+            goes through ``_finish`` (stamp, then emit), so this always sees
             the floored (derived vs. declared) value, never a stale closure
             read — while classes still use the registration-time closure value
             (`classes_for_log`), which is a fixed function of the return type
@@ -603,12 +603,10 @@ def mcp_tool(
             report summary.sensitivity="low" in its error response and audit
             row, understating the tier. It raises and never lowers, so a call
             that already derived a higher tier keeps it. Applied on every
-            return path that reaches _emit_privacy_event — including the two
-            crash/cancellation paths that build their envelope inline rather
-            than through one of the classify/timeout helpers above (MB-157:
-            _emit_privacy_event's static branch now reads sensitivity off the
-            envelope, so any path that skipped this stamp would under-report
-            its audit row).
+            exit path, via ``_finish`` — including the crash/cancellation paths that
+            build their envelope inline (MB-157: _emit_privacy_event's static
+            branch reads sensitivity off the envelope, so a path that skipped
+            this stamp would under-report its audit row).
 
             No-op for dynamic_classification tools: their sensitivity is decided
             per call (the static ``sensitivity`` here is only a HIGH placeholder),
@@ -618,6 +616,12 @@ def mcp_tool(
             if dynamic_classification:
                 return env
             return _stamp_envelope_sensitivity(env, sensitivity)
+
+        async def _finish(env: ResponseEnvelope[Any]) -> ResponseEnvelope[Any]:
+            """Stamp, then audit: the only way an envelope leaves this wrapper (MB-157)."""
+            env = _stamp_sensitivity(env)
+            await _emit_privacy_event(env)
+            return env
 
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope[Any]:
@@ -639,9 +643,7 @@ def mcp_tool(
                     bound = {}
                 cap_error = _check_collection_caps(fn.__name__, list_params, bound, cap)
                 if cap_error is not None:
-                    cap_error = _stamp_sensitivity(cap_error)
-                    await _emit_privacy_event(cap_error)
-                    return cap_error
+                    return await _finish(cap_error)
             timeout_attr = cast(
                 "float | _UnsetType",
                 wrapper._mcp_timeout_seconds,  # type: ignore[attr-defined]
@@ -702,11 +704,7 @@ def mcp_tool(
                     _call_conn_holder.reset(holder_token)
             except TimeoutError as exc:
                 if not cm.expired():
-                    err_env = _stamp_sensitivity(
-                        _classify_or_envelope(fn.__name__, exc)
-                    )
-                    await _emit_privacy_event(err_env)
-                    return err_env
+                    return await _finish(_classify_or_envelope(fn.__name__, exc))
                 elapsed = time.monotonic() - started
                 request_lifetime.cancel()
                 await asyncio.to_thread(request_lifetime.wait_for_publication)
@@ -765,32 +763,21 @@ def mcp_tool(
                     # CancelledError (a BaseException, not Exception) raised here
                     # would escape both the TimeoutError and Exception handlers
                     # with no audit row. Emit the crash event, then propagate.
-                    # Stamped like every other emit call site (MB-157) — this
-                    # crash-escape envelope would otherwise report "low" for a
-                    # HIGH/CRITICAL-tier tool's audit row.
-                    await _emit_privacy_event(
-                        _stamp_sensitivity(
-                            _build_unclassified_failure_envelope(fn.__name__)
-                        )
-                    )
+                    await _finish(_build_unclassified_failure_envelope(fn.__name__))
                     raise
-                timeout_env = _stamp_sensitivity(
+                return await _finish(
                     _build_timeout_envelope(fn.__name__, elapsed, timeout_s)
                 )
-                await _emit_privacy_event(timeout_env)
-                return timeout_env
             except Exception as exc:
                 # Unclassified exceptions return a structured envelope rather
                 # than propagating to mask_error_details, which would reduce
                 # the failure to an opaque str(exc) with no code to branch on.
-                err_env = _stamp_sensitivity(_classify_or_envelope(fn.__name__, exc))
-                await _emit_privacy_event(err_env)
-                return err_env
+                return await _finish(_classify_or_envelope(fn.__name__, exc))
             except asyncio.CancelledError:
                 # External cancellation (client disconnect / server shutdown)
                 # raises CancelledError — a BaseException that bypasses the
                 # TimeoutError and Exception handlers above. Without this branch
-                # the aborted invocation never reaches _emit_privacy_event and is
+                # the aborted invocation never reaches _finish and is
                 # missing from privacy.log.jsonl, leaving a hole in the tool-call
                 # audit surface. shield() so the audit write completes even under
                 # multiple concurrent cancel() calls (rapid reconnect / shutdown),
@@ -800,15 +787,8 @@ def mcp_tool(
                 request_lifetime.cancel()
                 await asyncio.to_thread(request_lifetime.wait_for_publication)
                 try:
-                    # Stamped like every other emit call site (MB-157) — this
-                    # cancellation envelope would otherwise report "low" for a
-                    # HIGH/CRITICAL-tier tool's audit row.
                     await asyncio.shield(
-                        _emit_privacy_event(
-                            _stamp_sensitivity(
-                                _build_unclassified_failure_envelope(fn.__name__)
-                            )
-                        )
+                        _finish(_build_unclassified_failure_envelope(fn.__name__))
                     )
                 except asyncio.CancelledError:
                     # The shielded emit keeps running in the background; this
@@ -823,17 +803,9 @@ def mcp_tool(
             try:
                 envelope = _check_envelope(fn.__name__, result)
             except TypeError as exc:
-                err_env = _stamp_sensitivity(
+                return await _finish(
                     _build_unclassified_failure_envelope(fn.__name__, exc)
                 )
-                await _emit_privacy_event(err_env)
-                return err_env
-            # Stamp summary.sensitivity with the decorator-derived tier so the
-            # envelope reflects the statically-derived classification regardless
-            # of what build_envelope() defaulted to in the tool body. Same helper
-            # the error-return paths use; it is a no-op for dynamic_classification
-            # tools (they own their per-call sensitivity).
-            envelope = _stamp_sensitivity(envelope)
             # Redact CRITICAL fields before returning. Skip the walk entirely
             # for tools whose return type has no CRITICAL field — the result
             # would be value-identical and the dataclass-tree rebuild is the
@@ -857,9 +829,10 @@ def mcp_tool(
                 # Same reason: envelope.data is `Unknown` after the generic erase.
                 redacted_data = redact_typed(envelope.data, consent=None)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
                 envelope = dataclasses.replace(envelope, data=redacted_data)  # pyright: ignore[reportUnknownArgumentType]
-            # Write a privacy.log.jsonl event for every tool call.
-            await _emit_privacy_event(envelope)
-            return envelope
+            # _finish stamps (a no-op for dynamic tools) after redaction; redaction
+            # only rewrites `data`, so stamping last is equivalent to stamping
+            # first and the audit event sees the redacted envelope.
+            return await _finish(envelope)
 
         wrapper._mcp_sensitivity = sensitivity  # type: ignore[attr-defined]
         # One attribute, two meanings, and the docs must not blur them: for a
