@@ -1326,6 +1326,25 @@ def test_correlated_unpivot_alias_named_after_catalog_table_is_masked(
     assert _ROUTING_NUMBER not in str(result.records)
 
 
+def test_aliased_standalone_unpivot_returns_safe_refusal(
+    populated_db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    _seed_account(populated_db)
+    query = """
+        SELECT * FROM (
+            UNPIVOT core.dim_accounts ON routing_number, account_id
+            INTO NAME n VALUE val
+        ) AS u
+    """
+    with pytest.raises(UserError) as exc:
+        execute_sql_query(populated_db, query, max_rows=10)
+
+    assert exc.value.code == error_codes.SQL_INVALID_QUERY
+    for private_text in ("core.dim_accounts", _ROUTING_NUMBER, "ACC000123456789"):
+        assert private_text not in str(exc.value.to_dict())
+        assert private_text not in caplog.text
+
+
 _UNPIVOT_OVER_BASE_TABLE = {
     "unaliased": (
         "SELECT account_id FROM core.dim_accounts "
