@@ -829,7 +829,8 @@ def register_gsheet_workflow_tools(mcp: FastMCP) -> None:
         (
             gsheet_connect_coarse,
             "gsheet_connect",
-            "Authenticate, connect, or reconnect in one mode-aware workflow. "
+            "Connect a sheet with url, reconnect with connection_id, or omit "
+            "both to authenticate only. Passing both is an error. "
             "Naming an account is required only when the sheet has no account "
             "column: omit account_id and account_name for a sheet that names "
             "its own accounts, and each row is filed under the account it names.",
