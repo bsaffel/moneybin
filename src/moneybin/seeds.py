@@ -6,11 +6,10 @@ canonical resolved dimensions — categories and merchants — are exposed as
 category-source bridge is exposed as ``core.bridge_category_source_map``.
 These views are also declared as SQLMesh models in
 ``src/moneybin/sqlmesh/models/core/dim_*.sql`` and ``bridge_category_source_map.sql``
-(the canonical spec for column shapes). ``refresh_views`` builds equivalent
-views directly via DuckDB so they are available in fresh test databases
-and on every ``Database`` open without requiring a full SQLMesh ``transform
-apply`` first; ``transform apply`` will subsequently ``CREATE OR REPLACE``
-the same views with identical bodies.
+(the canonical definitions). ``refresh_views`` installs the live views during
+database initialization and reinstalls them after SQLMesh applies a plan or
+restates models. Its projections must match the SQLMesh models while
+supporting older schemas during bootstrap.
 
 Also drops the legacy ``app.categories`` / ``app.merchants`` views from
 existing databases (retired in favor of the ``core.dim_*`` models).
@@ -167,7 +166,8 @@ def refresh_views(db: Database) -> None:
     If V006 has not yet run — ``app.merchants`` is still a TABLE because the
     operator opened the database with ``no_auto_upgrade=True`` — build a
     backward-compat passthrough that wraps the legacy table so categorization
-    reads still resolve. The pure user view lands once migrations complete.
+    reads still resolve. After migration the view resolves merchant category
+    names through ``core.dim_categories``.
     """
     _ensure_seed_tables_exist(db)
     legacy = db.execute(
@@ -183,11 +183,6 @@ def refresh_views(db: Database) -> None:
     if not is_pre_v006_table:
         db.execute("DROP VIEW IF EXISTS app.merchants")
 
-    # Build resolved dim views. Mirrors src/moneybin/sqlmesh/models/core/dim_*.sql so tests
-    # and freshly-opened databases see the dims without requiring a full
-    # SQLMesh `transform apply`. SQLMesh subsequently CREATE OR REPLACEs these
-    # with identical bodies on every transform run.
-    #
     # `class` is projected conditionally rather than assumed present: a
     # pre-V032 database (no_auto_upgrade=True, migrations skipped) still has
     # seeds.categories / app.user_categories in their pre-V032 shape (no
@@ -327,12 +322,12 @@ def refresh_views(db: Database) -> None:
         f"""
         CREATE OR REPLACE VIEW {MERCHANTS.full_name} AS
         SELECT
-            merchant_id, category_id,
-            raw_pattern, match_type, canonical_name,
-            category, subcategory, created_by,
-            exemplars,
-            created_at,
-            updated_at
-        FROM {USER_MERCHANTS.full_name}
+            um.merchant_id, um.category_id,
+            um.raw_pattern, um.match_type, um.canonical_name,
+            COALESCE(dc.category, um.category) AS category,
+            COALESCE(dc.subcategory, um.subcategory) AS subcategory,
+            um.created_by, um.exemplars, um.created_at, um.updated_at
+        FROM {USER_MERCHANTS.full_name} AS um
+        LEFT JOIN {CATEGORIES.full_name} AS dc ON um.category_id = dc.category_id
         """  # noqa: S608  # all interpolated names are TableRef constants, not user input
     )
