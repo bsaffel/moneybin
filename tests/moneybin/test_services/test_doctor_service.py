@@ -2246,12 +2246,7 @@ def test_unreported_holdings_warn(
 def test_unreported_holdings_ignores_closed_position_at_broker(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A broker row reporting quantity 0 (a closed position) must not surface.
-
-    ``is_short_or_nonpositive`` (the opening-lot bootstrap) already treats
-    ``held_qty <= 0`` as expected data, not a gap — a closed position at the
-    broker is not a position MoneyBin might secretly be holding.
-    """
+    """A broker row reporting zero shares is a closed position."""
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         "CREATE TABLE prep.stg_plaid__investment_holdings "

@@ -110,12 +110,7 @@ WITH first_snapshot AS (
     p.source_security_key,
     p.source_origin
 )
-/* The three guards. Each routes the position to review and synthesizes nothing —
-   a visible gap, never a plausible-looking guess. held_qty is COALESCEd to 0 so an
-   absent broker quantity lands in review rather than evaporating from both views
-   (NULL > 0 and NULL < 0 are both false).
-
-   position_type is compared through LOWER(): Plaid's is a prose enum, not
+/* position_type is compared through LOWER(): Plaid's is a prose enum, not
    schema-enforced, and it documents the values uppercase. An exact lowercase
    compare would miss 'SHORT' and synthesize a LONG opening lot for a short
    position — inverting the basis on the one case that must never be auto-derived.
@@ -124,20 +119,17 @@ SELECT
   p.*,
   COALESCE(iw.net_qty, 0) AS in_window_net,
   p.held_qty - COALESCE(iw.net_qty, 0) AS gap_qty,
-  (
-    COALESCE(p.held_qty, 0) <= 0
-    OR EXISTS(
-      SELECT
-        1
-      FROM raw.plaid_investment_holding_lots AS gl
-      WHERE
-        gl.account_id = p.source_account_key
-        AND gl.security_id = p.source_security_key
-        AND gl.source_origin = p.source_origin
-        AND gl.source_file = p.source_file
-        AND LOWER(COALESCE(gl.position_type, '')) = 'short'
-    )
-  ) AS is_short_or_nonpositive,
+  EXISTS(
+    SELECT
+      1
+    FROM raw.plaid_investment_holding_lots AS gl
+    WHERE
+      gl.account_id = p.source_account_key
+      AND gl.security_id = p.source_security_key
+      AND gl.source_origin = p.source_origin
+      AND gl.source_file = p.source_file
+      AND LOWER(COALESCE(gl.position_type, '')) = 'short'
+  ) AS has_short_lot,
   COALESCE(splits.split_count, 0) > 0 AS has_in_window_split
 FROM positions AS p
 LEFT JOIN in_window AS iw

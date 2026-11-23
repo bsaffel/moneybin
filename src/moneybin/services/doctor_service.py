@@ -1581,9 +1581,9 @@ class DoctorService:
     def _run_opening_lot_review(self) -> InvariantResult:
         """Positions the opening-lot bootstrap refused to synthesize.
 
-        Covers short/non-positive quantity, NULL basis, and
-        ``sold_out_prewindow`` gaps the bootstrap declined to reconstruct
-        rather than guess (``prep.stg_plaid__opening_lot_review``).
+        A known zero alone is a closed position. Short lots, negative or
+        unknown quantities, splits, and unreconciled share activity require
+        review, including disposals with no holdings snapshot for the position.
         ``security_id`` falls back to ``source_security_key`` (the same
         fallback ``_run_investment_unreported_holdings`` uses) — an unbound
         security is exactly the kind of gap this check exists to surface, and
@@ -1617,9 +1617,10 @@ class DoctorService:
                 status="warn",
                 detail=(
                     f"{len(rows)} position(s) not bootstrapped "
-                    "(short/split/negative-gap) — held basis may be missing; "
-                    "treat cost basis for these (account, security) pairs as "
-                    "incomplete until you can supply the opening lot manually"
+                    "due to a short lot, negative or unknown quantity, split, "
+                    "or unreconciled share activity. Check the affected "
+                    "positions and disposals against your broker records "
+                    "before relying on their cost basis."
                 ),
                 affected_ids=[f"{r[0]}:{r[1]} ({r[2]})" for r in rows],
             )
@@ -1975,11 +1976,10 @@ class DoctorService:
         place this direction is visible — scoped to each item's newest
         snapshot (mirrors ``dim_holdings.sql``'s own scoping) so a position
         the broker has since stopped reporting (sold, disconnected) is not
-        flagged as a live gap. ``h.quantity > 0`` excludes a broker row
-        reporting a CLOSED position (quantity 0 or NULL, both allowed by the
-        raw DDL) — the same "holds nothing" case
-        ``is_short_or_nonpositive`` already treats as expected data upstream
-        (the opening-lot bootstrap), not a secretly-held position.
+        flagged as a live gap. A known zero alone is a closed position.
+        This check requires positive evidence of shares held. Opening-lot
+        review handles unknown quantities, shorts, splits, and unreconciled
+        share activity at the first snapshot.
         """
         name = "investment_unreported_holdings"
         try:

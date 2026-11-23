@@ -55,7 +55,7 @@ WITH bootstrappable AS (
     *
   FROM prep.int_plaid__opening_positions
   WHERE
-    gap_qty > 0 AND NOT is_short_or_nonpositive AND NOT has_in_window_split
+    gap_qty > 0 AND held_qty > 0 AND NOT has_short_lot AND NOT has_in_window_split
 ), eligible_lots AS (
   /* Pre-window lots of the frozen first snapshot. Strict < W: the transaction window
      is inclusive of W, so a lot dated exactly on W belongs to the window and drawing
