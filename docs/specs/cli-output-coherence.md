@@ -876,9 +876,10 @@ Numbered, each independently testable.
 
     A report declares its column as `OutputColumn(uncategorized=True)`; the
     column's `DataClass.CATEGORY` alone does not qualify it, because that class
-    also covers `subcategory`, where a NULL is not a taxonomy gap. Report tables render the
-    placeholder and omit its count. For example, one uncategorized series in
-    `spending-trend` can appear in every month of a twelve-month report.
+    also covers `subcategory`, where a NULL is not a taxonomy gap.
+    Report tables render the placeholder and omit its count. For example, one
+    uncategorized series in `spending-trend` can appear in every month of a
+    twelve-month report.
 
 **Stubs (F4)**
 
