@@ -818,10 +818,11 @@ Numbered, each independently testable.
     (requirement 10), including under `--quiet` and `--wide`. When columns
     are omitted, both counts share one line.
 
-    **Count a missing transaction category at substitution time.** The caller declares the column and the word, then
-    passes the stored value through — NULL included — rather than substituting
-    and letting the renderer match the string back. Two things fall out that
-    the string match got wrong. A description or a category a person *authored*
+    **Count a missing transaction category at substitution time.** The caller
+    declares the column and the word, then passes the stored value through —
+    NULL included — rather than substituting and letting the renderer match the
+    string back. Two things fall out that the string match got wrong.
+    A description or a category a person *authored*
     as `Uncategorized` is a value, not a gap: `tabular` and `manual` keep
     whatever text was written, and plenty of tools export that exact word as
     their own placeholder, so matching the rendered string would count an
