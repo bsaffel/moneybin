@@ -42,6 +42,45 @@ def _sample_event() -> dict[str, object]:
     }
 
 
+def test_recovery_audit_does_not_recreate_missing_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.config import register_profile_resolver, set_current_profile
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    set_current_profile("removed")
+    register_profile_resolver(None)
+    write_privacy_event(_sample_event())
+    assert (tmp_path / "privacy.log.jsonl").is_file()
+    assert not (tmp_path / "profiles").exists()
+
+
+def test_audit_still_resolves_existing_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.config import (
+        clear_current_profile,
+        register_profile_resolver,
+        set_current_profile,
+    )
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    existing = tmp_path / "profiles/alice"
+    existing.mkdir(parents=True)
+    clear_current_profile()
+    calls: list[str] = []
+
+    def resolve() -> None:
+        calls.append("resolved")
+        set_current_profile("alice")
+
+    register_profile_resolver(resolve)
+    write_privacy_event(_sample_event())
+    assert calls == ["resolved"]
+    assert (existing / "privacy.log.jsonl").is_file()
+    assert not (tmp_path / "privacy.log.jsonl").exists()
+
+
 def _write_event_in_process(
     profile_dir: str,
     start: object,

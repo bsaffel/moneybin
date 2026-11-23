@@ -170,6 +170,11 @@ def get_base_dir() -> Path:
     return (Path.home() / ".moneybin").resolve()
 
 
+def get_sync_schedule_dir(home: Path) -> Path:
+    """Metadata-only scheduling state, outside every profile database."""
+    return home / "sync-schedules"
+
+
 # Retired tabular env-var namespace. ``MoneyBinSettings.__init__`` errors out
 # if any key with this prefix appears in ``os.environ`` or the active dotenv
 # file — the knobs moved to ``MONEYBIN_PROVIDERS__TABULAR__*`` in Plan 1 of

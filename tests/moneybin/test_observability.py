@@ -59,6 +59,26 @@ class TestSetupObservability:
             mock_register.assert_called_once_with(flush_metrics)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("persist", [True, False])
+    def test_finish_cli_metrics_unregisters_and_can_register_again(
+        self, persist: bool
+    ) -> None:
+        from moneybin.observability import finish_cli_metrics, setup_observability
+
+        with (
+            patch("moneybin.observability.setup_logging"),
+            patch("moneybin.observability.flush_metrics") as flush,
+            patch("atexit.register") as register,
+            patch("atexit.unregister") as unregister,
+        ):
+            setup_observability(stream="cli")
+            finish_cli_metrics(persist=persist)
+            unregister.assert_called_once_with(flush)
+            assert flush.call_count == int(persist)
+            setup_observability(stream="cli")
+            assert register.call_count == 2
+
+    @pytest.mark.unit
     def test_mcp_stream_does_not_register_atexit(self) -> None:
         """MCP sessions skip atexit — flush happens inside close_db()."""
         from moneybin.observability import setup_observability
