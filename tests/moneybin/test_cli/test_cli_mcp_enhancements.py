@@ -11,6 +11,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+from moneybin import DISTRIBUTION_NAME
 from moneybin.cli import pager
 from moneybin.cli.commands.mcp import (
     _gate_network_transport,  # pyright: ignore[reportPrivateUsage]
@@ -685,22 +686,30 @@ class TestMCPInstall:
     def test_install_emits_pinned_uvx_from_an_installed_package(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An installed package's config must point at the published package."""
+        """An installed package's config pins the distribution we publish.
+
+        Never the bare `moneybin` PyPI name, which belongs to an unrelated party.
+        """
         monkeypatch.setattr(
             "moneybin.cli.commands.mcp.running_checkout_root", lambda: None
         )
         monkeypatch.delenv("MONEYBIN_HOME", raising=False)
 
         result = runner.invoke(
-            app, ["install", "--client", "claude-desktop", "--print"]
+            app, ["install", "--client", "cursor", "--profile", "p", "--print"]
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         from moneybin.cli.main import get_version
 
-        assert f"moneybin=={get_version()}" in result.stdout
-        assert "--from" in result.stdout
-        assert "--directory" not in result.stdout
+        entry = json.loads(result.stdout)["mcpServers"]["MoneyBin (p)"]
+        assert entry["args"][:4] == [
+            "tool",
+            "run",
+            "--from",
+            f"{DISTRIBUTION_NAME}=={get_version()}",
+        ]
+        assert "moneybin==" not in result.stdout
 
     def test_install_keeps_the_repo_dev_path_from_a_checkout(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

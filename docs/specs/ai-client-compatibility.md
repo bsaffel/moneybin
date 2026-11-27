@@ -198,7 +198,7 @@ existing patterns, so they live here rather than in a new spec:
   the package gives one resolution rule that holds in both layouts; a
   source-vs-wheel fallback branch would leave two rules to keep in sync.
 - **The emitted MCP config pins the installed version**
-  (`uv tool run --from moneybin==X.Y.Z`) when `mcp install` runs outside a repo
+  (`uv tool run --from moneybin-finance==X.Y.Z`) when `mcp install` runs outside a repo
   checkout. MoneyBin runs forward-only schema migrations when it opens an
   encrypted database, so an unpinned config would let a newly released version
   install itself on the client's next restart and migrate the user's ledger with

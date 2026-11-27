@@ -21,6 +21,7 @@ from typing import Annotated, Any, Literal, get_args
 
 import typer
 
+from moneybin import DISTRIBUTION_NAME
 from moneybin.cli.output import (
     OutputFormat,
     emit_human_result,
@@ -341,8 +342,11 @@ def mcp_install(
         # a new release auto-install on the client's next restart and migrate
         # the user's encrypted database with no user action.
         #
-        # Accepted pre-launch gap: until the first tag publishes moneybin to
-        # PyPI, this pinned `--from moneybin==X.Y.Z` config is unresolvable, so a
+        # Pinned by DISTRIBUTION_NAME, never the bare `moneybin` PyPI name,
+        # which belongs to an unrelated party.
+        #
+        # Accepted pre-launch gap: until the first tag publishes the package to
+        # PyPI, this pinned `--from <distribution>==X.Y.Z` config is unresolvable, so a
         # user running a non-checkout install during the pre-launch window gets
         # a config `uv tool run` can't satisfy. Narrow and self-resolving — the
         # documented pre-launch install is the git-clone dev path (which takes
@@ -350,7 +354,7 @@ def mcp_install(
         # present the published path as arriving with the first release. No
         # fallback is added: once published the pin is correct, and a permanent
         # warning would be post-launch noise.
-        args = ["tool", "run", "--from", f"moneybin=={get_version()}"]
+        args = ["tool", "run", "--from", f"{DISTRIBUTION_NAME}=={get_version()}"]
         # Assumes the client starts the tool outside any checkout, where the
         # default home resolves. A client that starts it inside a checkout
         # opens that checkout's home instead; the guide states the assumption.
