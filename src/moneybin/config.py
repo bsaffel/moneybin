@@ -43,12 +43,16 @@ from moneybin.extractors.ofx.config import OFXProviderConfig
 from moneybin.extractors.plaid.config import PlaidProviderConfig
 from moneybin.extractors.tabular.config import TabularProviderConfig
 
+# The current distribution name plus the pre-rename one, so a checkout of an
+# older branch (or a worktree still on one) keeps resolving its own data home.
+_CHECKOUT_PROJECT_NAMES = ("moneybin-finance", "moneybin")
+
 
 def _is_moneybin_repo(path: Path) -> bool:
     """Check if path is a moneybin repo checkout.
 
     Detects the moneybin repository by checking for .git directory and
-    pyproject.toml with name = "moneybin".
+    a pyproject.toml declaring one of `_CHECKOUT_PROJECT_NAMES`.
 
     Args:
         path: Directory to check.
@@ -60,7 +64,7 @@ def _is_moneybin_repo(path: Path) -> bool:
         return False
     try:
         content = (path / "pyproject.toml").read_text()
-        return '\nname = "moneybin"' in content
+        return any(f'\nname = "{name}"' in content for name in _CHECKOUT_PROJECT_NAMES)
     except OSError:
         return False
 

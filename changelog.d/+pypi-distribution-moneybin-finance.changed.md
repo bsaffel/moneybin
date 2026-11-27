@@ -1,0 +1,1 @@
+MoneyBin publishes to PyPI as `moneybin-finance`. The `moneybin` command and the `moneybin` import package keep their names, so install with `uv tool install moneybin-finance` or run `uvx --from moneybin-finance moneybin`.

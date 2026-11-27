@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from moneybin import DISTRIBUTION_NAME
 from moneybin.database import DatabaseLockError
 from moneybin.mcp.tools.system import system_status, system_status_coarse
 
@@ -27,7 +28,7 @@ async def test_system_status_names_the_running_package_version(
     """The envelope carries the installed distribution version, not a placeholder."""
     data = system_status().to_dict()["data"]
 
-    assert data["build"]["version"] == version("moneybin")
+    assert data["build"]["version"] == version(DISTRIBUTION_NAME)
 
 
 @pytest.mark.unit
@@ -49,7 +50,7 @@ async def test_locked_database_still_names_the_build(
     envelope = system_status().to_dict()
 
     assert envelope["summary"]["degraded"] is True
-    assert envelope["data"]["build"]["version"] == version("moneybin")
+    assert envelope["data"]["build"]["version"] == version(DISTRIBUTION_NAME)
 
 
 @pytest.mark.unit
@@ -90,4 +91,4 @@ async def test_the_registered_tool_surfaces_the_build(mcp_db: object) -> None:
         for section in response.to_dict()["data"]["sections"]
         if section.get("kind") == "overview"
     )
-    assert overview["overview"]["build"]["version"] == version("moneybin")
+    assert overview["overview"]["build"]["version"] == version(DISTRIBUTION_NAME)

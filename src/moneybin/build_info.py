@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+from moneybin import DISTRIBUTION_NAME
+
 #: Bound on the `git rev-parse` probe. Generous for a local repository read;
 #: it exists so a wedged git can never delay import indefinitely.
 _GIT_REVISION_TIMEOUT_SECONDS = 5.0
@@ -100,7 +102,7 @@ def read_package_version() -> str | None:
     start is not.
     """
     try:
-        return version("moneybin")
+        return version(DISTRIBUTION_NAME)
     except PackageNotFoundError:
         return None
 

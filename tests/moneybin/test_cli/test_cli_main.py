@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from moneybin import DISTRIBUTION_NAME
 from moneybin.cli.main import app, get_version
 
 runner = CliRunner()
@@ -37,7 +38,7 @@ def test_version_flag_prints_installed_version() -> None:
 
 
 def test_get_version_matches_distribution_metadata() -> None:
-    assert get_version() == importlib.metadata.version("moneybin")
+    assert get_version() == importlib.metadata.version(DISTRIBUTION_NAME)
 
 
 def test_version_preempts_subcommand_execution(

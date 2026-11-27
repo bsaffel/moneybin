@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 # Documentation: https://packaging.python.org/en/latest/specifications/core-metadata/
-name = "moneybin"
+name = "moneybin-finance"
 version = "0.1.0"
 description = "Local-first, AI-native personal finance data platform built on DuckDB, SQLMesh, and MCP."
 readme = "README.md"
@@ -163,7 +163,7 @@ include = ["moneybin*"]
 
 [tool.setuptools.package-data]
 # Every file the runtime loads from disk rather than imports. Without these a
-# `pip install moneybin` cannot create a profile, migrate a schema, run a
+# `pip install moneybin-finance` cannot create a profile, migrate a schema, run a
 # transform, or generate demo data.
 #
 # These MUST be in-package globs. A pattern that escapes the package directory

@@ -34,6 +34,7 @@ from typing import Any, Literal
 
 import duckdb
 
+from moneybin import DISTRIBUTION_NAME
 from moneybin.db_lock._types import CheckpointReason, OperationType
 
 # SQLMesh resolves MAX_FORK_WORKERS at import via os.sched_getaffinity, which
@@ -804,7 +805,7 @@ class Database:
             # the only trigger — so a DB opened pre-V003 stayed pre-V003
             # forever if the version hadn't moved between releases. Any
             # unapplied migration (or a version mismatch) drives the runner.
-            current_pkg_version = importlib.metadata.version("moneybin")
+            current_pkg_version = importlib.metadata.version(DISTRIBUTION_NAME)
             stored_versions = get_current_versions(self)
             stored_pkg_version = stored_versions.get("moneybin")
             runner = MigrationRunner(self)
@@ -1717,7 +1718,7 @@ def _read_only_ladder_is_behind(db: "Database") -> bool:
         stored_pkg_version = get_current_versions(db).get("moneybin")
         if stored_pkg_version is None:
             return False
-        if stored_pkg_version != importlib.metadata.version("moneybin"):
+        if stored_pkg_version != importlib.metadata.version(DISTRIBUTION_NAME):
             return True
         return bool(MigrationRunner(db).pending())
     except duckdb.Error:
