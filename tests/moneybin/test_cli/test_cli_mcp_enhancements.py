@@ -57,6 +57,21 @@ def _noninteractive_policy(*, no_pager: bool = False) -> TerminalPolicy:
     )
 
 
+def _fake_installed_moneybin(
+    monkeypatch: pytest.MonkeyPatch, executable: str | None
+) -> None:
+    """Run install as an installed package whose `moneybin` resolves to `executable`."""
+    import shutil
+
+    real_which = shutil.which
+
+    def fake_which(cmd: str) -> str | None:
+        return executable if cmd == "moneybin" else real_which(cmd)
+
+    monkeypatch.setattr("moneybin.cli.commands.mcp.running_checkout_root", lambda: None)
+    monkeypatch.setattr("moneybin.cli.commands.mcp.shutil.which", fake_which)
+
+
 def _catalog_entry(name: str, description: str) -> MagicMock:
     entry = MagicMock()
     entry.name = name
@@ -682,25 +697,46 @@ class TestMCPInstall:
         assert "→" not in result.stderr
         assert "restart" in result.stderr.lower()
 
-    def test_install_emits_pinned_uvx_from_an_installed_package(
+    def test_installed_package_launches_the_installed_executable(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An installed package's config must point at the published package."""
+        """An installed package's config runs that executable, never a PyPI pin.
+
+        The `moneybin` PyPI name belongs to an unrelated party, so a
+        `--from moneybin==X` config would run whatever they upload.
+        """
+        _fake_installed_moneybin(monkeypatch, "/opt/homebrew/bin/moneybin")
         monkeypatch.setattr(
-            "moneybin.cli.commands.mcp.running_checkout_root", lambda: None
+            "moneybin.cli.commands.mcp.get_base_dir",
+            lambda: (Path.home() / ".moneybin").resolve(),
         )
         monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+
+        result = runner.invoke(
+            app, ["install", "--client", "cursor", "--profile", "p", "--print"]
+        )
+
+        assert result.exit_code == 0, result.output
+        entry = json.loads(result.stdout)["mcpServers"]["MoneyBin (p)"]
+        assert entry == {
+            "command": "/opt/homebrew/bin/moneybin",
+            "args": ["--profile", "p", "mcp", "serve"],
+        }
+        assert "/opt/homebrew/bin/moneybin" in result.stderr
+
+    def test_installed_package_without_an_executable_refuses(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With nothing on PATH to launch, refuse rather than fall back to PyPI."""
+        _fake_installed_moneybin(monkeypatch, None)
 
         result = runner.invoke(
             app, ["install", "--client", "claude-desktop", "--print"]
         )
 
-        assert result.exit_code == 0
-        from moneybin.cli.main import get_version
-
-        assert f"moneybin=={get_version()}" in result.stdout
-        assert "--from" in result.stdout
-        assert "--directory" not in result.stdout
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert "No installed `moneybin` executable" in result.stderr
 
     def test_install_keeps_the_repo_dev_path_from_a_checkout(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -778,9 +814,7 @@ class TestMCPInstall:
     ) -> None:
         """A published-tool server opens ~/.moneybin; any other home is pinned."""
         home = tmp_path / "checkout" / ".moneybin"
-        monkeypatch.setattr(
-            "moneybin.cli.commands.mcp.running_checkout_root", lambda: None
-        )
+        _fake_installed_moneybin(monkeypatch, "/usr/local/bin/moneybin")
         monkeypatch.setattr("moneybin.cli.commands.mcp.get_base_dir", lambda: home)
         monkeypatch.delenv("MONEYBIN_HOME", raising=False)
 
@@ -790,7 +824,7 @@ class TestMCPInstall:
 
         assert result.exit_code == 0, result.output
         entry = json.loads(result.stdout)["mcpServers"]["MoneyBin (p)"]
-        assert entry["args"][:2] == ["tool", "run"]
+        assert entry["command"] == "/usr/local/bin/moneybin"
         assert entry["env"] == {"MONEYBIN_HOME": str(home)}
 
     def test_installed_package_at_the_default_home_pins_nothing(
@@ -798,9 +832,7 @@ class TestMCPInstall:
     ) -> None:
         """The default home is what the launched server opens on its own."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.cli.commands.mcp.running_checkout_root", lambda: None
-        )
+        _fake_installed_moneybin(monkeypatch, "/usr/local/bin/moneybin")
         monkeypatch.setattr(
             "moneybin.cli.commands.mcp.get_base_dir",
             lambda: (tmp_path / ".moneybin").resolve(),
@@ -852,9 +884,7 @@ class TestMCPInstall:
         that MONEYBIN_HOME still lands in the emitted env there, so a future
         refactor cannot silently re-couple home-pinning to the repo branch.
         """
-        monkeypatch.setattr(
-            "moneybin.cli.commands.mcp.running_checkout_root", lambda: None
-        )
+        _fake_installed_moneybin(monkeypatch, "/usr/local/bin/moneybin")
         monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
 
         result = runner.invoke(
@@ -862,8 +892,8 @@ class TestMCPInstall:
         )
 
         assert result.exit_code == 0
-        # Still the pinned published path...
-        assert "--from" in result.stdout
+        # Still the installed-executable path...
+        assert "/usr/local/bin/moneybin" in result.stdout
         # ...and the home is pinned into the config's env block.
         assert str(tmp_path.resolve()) in result.stdout
 
