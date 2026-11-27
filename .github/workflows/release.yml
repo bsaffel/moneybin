@@ -116,7 +116,7 @@ jobs:
     # this job pauses for a human at execution time. Do not remove.
     environment:
       name: ${{ github.event_name == 'workflow_dispatch' && 'testpypi' || 'pypi' }}
-      url: ${{ github.event_name == 'workflow_dispatch' && 'https://test.pypi.org/p/moneybin' || 'https://pypi.org/p/moneybin' }}
+      url: ${{ github.event_name == 'workflow_dispatch' && 'https://test.pypi.org/p/moneybin-finance' || 'https://pypi.org/p/moneybin-finance' }}
     permissions:
       id-token: write  # Trusted Publishing (OIDC) — no API token anywhere
     steps:
@@ -183,9 +183,9 @@ jobs:
           # Retrying demo would be wrong: a genuine demo failure must fail the
           # release, and a retry after demo already wrote data would block on its
           # non-interactive rebuild confirm. `--yes` auto-accepts that rebuild.
-          retry uv tool run --from "moneybin==$VERSION" --with keyrings.alt \
+          retry uv tool run --from "moneybin-finance==$VERSION" --with keyrings.alt \
             moneybin --version
-          uv tool run --from "moneybin==$VERSION" --with keyrings.alt \
+          uv tool run --from "moneybin-finance==$VERSION" --with keyrings.alt \
             moneybin demo --persona basic --yes
 
   github-release:

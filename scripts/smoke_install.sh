@@ -10,7 +10,7 @@
 # guard exists to catch — it is invisible to the normal test suite, which
 # always runs inside the repo against the locked dependency set. Installing
 # into a venv with no repo on sys.path and running from elsewhere is the only
-# way to exercise what a `pip install moneybin` user actually gets.
+# way to exercise what a `pip install moneybin-finance` user actually gets.
 #
 # Usage:
 #   scripts/smoke_install.sh [DIST_DIR]
@@ -50,7 +50,7 @@ VENV="$WORK_DIR/smoke-venv"
 echo "==> Installing $(basename "$WHEEL") into a clean venv at $VENV"
 
 # --seed provides pip: this venv stands in for a user's environment, so the
-# wheel goes in with pip exactly as a real `pip install moneybin` would. That
+# wheel goes in with pip exactly as a real `pip install moneybin-finance` would. That
 # is not a violation of the project's uv-only rule, which governs project
 # tooling, not the simulated user.
 uv venv --seed --clear "$VENV"

@@ -31,6 +31,7 @@ import pytest
 
 import moneybin.database as db_module
 import moneybin.db_lock as db_lock_module
+from moneybin import DISTRIBUTION_NAME
 from moneybin.database import (
     Database,
     DatabaseLockError,
@@ -134,7 +135,7 @@ def test_read_only_open_applies_a_behind_ladder_and_reads_current_data(
         ).fetchone() == ("2",)
         assert db.execute("SELECT current_setting('TimeZone')").fetchone() == ("UTC",)
 
-    assert version == (importlib.metadata.version("moneybin"),)
+    assert version == (importlib.metadata.version(DISTRIBUTION_NAME),)
 
 
 def test_read_only_open_refuses_when_no_auto_upgrade_is_set(
@@ -279,7 +280,7 @@ def test_concurrent_read_only_opens_serialize_the_upgrade(
         t.join(timeout=15.0)
 
     assert not any(t.is_alive() for t in threads), "a reader did not finish in time"
-    current = importlib.metadata.version("moneybin")
+    current = importlib.metadata.version(DISTRIBUTION_NAME)
     assert outcomes == {"reader-0": current, "reader-1": current}, outcomes
     assert db_path.with_name(db_path.name + ".write.lock").exists()
 

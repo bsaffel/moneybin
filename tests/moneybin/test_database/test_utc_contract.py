@@ -11,6 +11,7 @@ import duckdb
 import pytest
 from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
 
+from moneybin import DISTRIBUTION_NAME
 from moneybin.database import (
     Database,
     _pin_cursor_to_moneybin,  # pyright: ignore[reportPrivateUsage]  # adapter boundary
@@ -163,7 +164,9 @@ def test_fresh_bootstrap_certifies_only_aware_schema(
             "SELECT version FROM app.versions WHERE component = 'moneybin'"
         ).fetchone()
         assert package_version == (
-            None if no_auto_upgrade else (importlib.metadata.version("moneybin"),)
+            None
+            if no_auto_upgrade
+            else (importlib.metadata.version(DISTRIBUTION_NAME),)
         )
     with Database(path, secret_store=mock_secret_store, read_only=True) as reopened:
         assert inspect_temporal_contract(reopened.conn) == "utc"

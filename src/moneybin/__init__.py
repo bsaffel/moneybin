@@ -11,6 +11,9 @@ All financial data is stored locally with user-controlled encryption and backup.
 
 from typing import Any
 
+# The PyPI distribution name; the import package and CLI stay `moneybin`.
+DISTRIBUTION_NAME = "moneybin-finance"
+
 
 def __getattr__(name: str) -> Any:
     # Single-source the version from installed distribution metadata (same as
@@ -20,5 +23,5 @@ def __getattr__(name: str) -> Any:
     if name == "__version__":
         import importlib.metadata
 
-        return importlib.metadata.version("moneybin")
+        return importlib.metadata.version(DISTRIBUTION_NAME)
     raise AttributeError(f"module {__name__!r} has no attribute {name}")

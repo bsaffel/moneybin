@@ -171,7 +171,7 @@ so it lives at rung 7's gate, not rung 2's.
 
 | Rung | Artifact | Reaches | Review gate | Address |
 |---|---|---|---|---|
-| 1 | **PyPI + `uvx moneybin`** as the canonical config command (repo-checkout `uv run` stays the dev path) | every stdio client | none (quiet publish) | M3B — **tester-eligible** |
+| 1 | **PyPI + `uvx --from moneybin-finance moneybin`** as the canonical config command (repo-checkout `uv run` stays the dev path) | every stdio client | none (quiet publish) | M3B — **tester-eligible** |
 | 2 | **`.mcpb` bundle** via `server.type="uv"` (manifest ≥0.2 w/ privacy policy, so it's directory-submittable later) | Claude Desktop one-click; Claude Code; MCP for Windows | none (self-install) | M3B — **tester-eligible** |
 | 3 | **Claude Code plugin + self-hosted marketplace** (`.claude-plugin/marketplace.json` in a MoneyBin repo; bundles the MCP server now, skills later) | all Claude Code users, `/plugin install` | none (self-hosted marketplace needs no Anthropic approval) | M3B — **tester-eligible** |
 | 4 | **Official MCP Registry publish** (`server.json`, `pypi` registryType, namespace via GitHub OIDC or DNS) → aggregators (Smithery, Glama) pick it up; **install deep-link badges** (Cursor, VS Code) in README | discovery everywhere | none (self-serve namespace verification, like PyPI) | M3B — **tester-eligible** |

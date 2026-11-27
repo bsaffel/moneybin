@@ -18,6 +18,8 @@ from typing import Annotated
 
 import typer
 
+from moneybin import DISTRIBUTION_NAME
+
 from ..config import (
     mark_profile_resolution_pending,
     register_profile_resolver,
@@ -91,7 +93,7 @@ app = typer.Typer(
 
 def get_version() -> str:
     """Installed moneybin distribution version."""
-    return importlib.metadata.version("moneybin")
+    return importlib.metadata.version(DISTRIBUTION_NAME)
 
 
 def _version_callback(value: bool) -> None:

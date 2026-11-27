@@ -6,9 +6,31 @@ import pytest
 
 from moneybin.config import (
     canonical_checkout_root,
+    find_repo_root,
     get_base_dir,
     running_checkout_root,
 )
+
+
+@pytest.mark.parametrize("project_name", ["moneybin-finance", "moneybin"])
+def test_checkout_is_detected_under_current_and_pre_rename_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, project_name: str
+) -> None:
+    """A checkout of a branch from before the distribution rename still resolves."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "{project_name}"\n')
+    monkeypatch.chdir(tmp_path)
+    assert find_repo_root() == tmp_path.resolve()
+
+
+def test_an_unrelated_project_is_not_a_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only MoneyBin's own project names count."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "moneybin-other"\n')
+    monkeypatch.chdir(tmp_path)
+    assert find_repo_root() is None
 
 
 def _make_worktree(tmp_path: Path) -> tuple[Path, Path]:
