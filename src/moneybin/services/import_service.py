@@ -364,6 +364,20 @@ class ImportResult:
         """
         return self.details.get("seed_rows", self.transactions)
 
+    @property
+    def needs_refresh(self) -> bool:
+        """Whether this file's rows await a transform refresh.
+
+        Keys on rows *extracted*, not newly inserted: raw inserts are INSERT OR
+        IGNORE, so a re-import after a failed refresh reports zero inserts while
+        the rows still await transform. Seed-path PDFs write nothing tabular, so
+        they never warrant a refresh.
+        """
+        return self.file_type in ("ofx", "tabular") or (
+            self.file_type == "pdf"
+            and self.details.get("transactions_extracted", 0) > 0
+        )
+
     def summary(self) -> str:
         """Human-readable import summary."""
         label = _display_label(self.file_type, Path(self.file_path))
@@ -6508,25 +6522,8 @@ class ImportService:
             disclosure_consent=disclosure_consent,
         )
 
-        # Include PDFs only when the deterministic path landed transactions —
-        # seed-path PDFs write nothing tabular, so a refresh would run the
-        # full SQLMesh apply for no purpose and could raise on unrelated
-        # transform failures even though no PDF data needs to propagate.
-        #
-        # Gate on "the deterministic path produced rows" (transactions_extracted),
-        # not "rows were newly inserted" (result.transactions). raw inserts use
-        # INSERT OR IGNORE on the (transaction_id, account_id, source_file)
-        # PK, so a re-import after a prior refresh failed reports
-        # transactions == 0 even though every row is present. Without this,
-        # the user would re-run the same file, see zero inserts, skip
-        # refresh, and the rows would stay invisible to core/reports.
-        if refresh and (
-            result.file_type in ("ofx", "tabular")
-            or (
-                result.file_type == "pdf"
-                and result.details.get("transactions_extracted", 0) > 0
-            )
-        ):
+        # Gate rationale: see ImportResult.needs_refresh.
+        if refresh and result.needs_refresh:
             # SQLMesh failures keep the legacy exception. Planner blocks retain
             # their stage and durable import outcome for the CLI's nonzero exit.
             refresh_result = _refresh(self._db)
@@ -6727,17 +6724,8 @@ class ImportService:
                     )
                 )
                 any_succeeded = True
-                # Match the single-file refresh gate: the deterministic PDF
-                # path is transformable when it produced rows
-                # (transactions_extracted), regardless of how many were
-                # newly inserted. INSERT OR IGNORE means a re-import after
-                # a prior refresh failure has transactions == 0 even though
-                # the rows are present and waiting for transform — gating
-                # on insert count would skip refresh and leave them invisible.
-                if r.file_type in ("ofx", "tabular") or (
-                    r.file_type == "pdf"
-                    and r.details.get("transactions_extracted", 0) > 0
-                ):
+                # Same gate as the single-file path; see ImportResult.needs_refresh.
+                if r.needs_refresh:
                     any_transformable = True
             except ImportConfirmationRequiredError as e:
                 # Distinct from generic failure: the file's detector formed
