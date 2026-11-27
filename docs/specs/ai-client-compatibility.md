@@ -197,13 +197,16 @@ existing patterns, so they live here rather than in a new spec:
   installed wheel, where there is no repo above the package. Relocating it into
   the package gives one resolution rule that holds in both layouts; a
   source-vs-wheel fallback branch would leave two rules to keep in sync.
-- **The emitted MCP config pins the installed version**
-  (`uv tool run --from moneybin-finance==X.Y.Z`) when `mcp install` runs outside a repo
-  checkout. MoneyBin runs forward-only schema migrations when it opens an
-  encrypted database, so an unpinned config would let a newly released version
+- **The emitted MCP config launches the installed executable** (the absolute
+  path of `moneybin` on `PATH`) when `mcp install` runs outside a repo checkout.
+  MoneyBin runs forward-only schema migrations when it opens an encrypted
+  database, so a config that resolves the latest release would let a new version
   install itself on the client's next restart and migrate the user's ledger with
-  no action from them. Pinning makes every upgrade deliberate: the user re-runs
-  `moneybin mcp install`, which re-pins to the now-current version. **Deferred
+  no action from them. The installed executable changes only when the user
+  upgrades it. The config never resolves a PyPI requirement: the `moneybin` name
+  on PyPI belongs to an unrelated party, so a `uv tool run --from moneybin==X.Y.Z`
+  entry would run whatever that party uploads against the user's financial data.
+  Install refuses when no `moneybin` is on `PATH` rather than fall back. **Deferred
   follow-up:** a startup version-check nudge that surfaces when a newer MoneyBin
   is available, so pinning doesn't silently strand a user on an old version.
 
