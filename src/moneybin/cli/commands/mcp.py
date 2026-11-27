@@ -298,8 +298,6 @@ def mcp_install(
         )
         raise typer.Exit(2)  # usage error — matches `mcp config path` convention
 
-    from moneybin.cli.main import get_version
-
     resolved_profile = profile or get_current_profile()
 
     env: dict[str, str] = {}
@@ -332,25 +330,21 @@ def mcp_install(
                 f"the main checkout ({canonical_root}) so it stays valid after "
                 "this worktree is removed."
             )
-        args: list[str] = ["run", "--directory", str(canonical_root)]
+        command = _resolve_uv_command()
+        args: list[str] = ["run", "--directory", str(canonical_root), "moneybin"]
         # `uv run --directory` starts the server in the checkout, so its repo
         # detection resolves the checkout's own data home.
         launch_home = canonical_root / ".moneybin"
     else:
-        # Installed path: run the PUBLISHED package, pinned. Unpinned would let
-        # a new release auto-install on the client's next restart and migrate
-        # the user's encrypted database with no user action.
-        #
-        # Accepted pre-launch gap: until the first tag publishes moneybin to
-        # PyPI, this pinned `--from moneybin==X.Y.Z` config is unresolvable, so a
-        # user running a non-checkout install during the pre-launch window gets
-        # a config `uv tool run` can't satisfy. Narrow and self-resolving — the
-        # documented pre-launch install is the git-clone dev path (which takes
-        # the checkout branch above), and README/ai-client-compatibility.md
-        # present the published path as arriving with the first release. No
-        # fallback is added: once published the pin is correct, and a permanent
-        # warning would be post-launch noise.
-        args = ["tool", "run", "--from", f"moneybin=={get_version()}"]
+        # Installed path: launch the installed executable itself. It never
+        # upgrades on a client restart, so a forward-only migration still waits
+        # for the user to upgrade the tool. Never a PyPI requirement: the
+        # `moneybin` name on PyPI belongs to an unrelated party, so
+        # `uv tool run --from moneybin==X` would run whatever they upload
+        # against the user's financial data.
+        command = _resolve_installed_moneybin()
+        render_note(f"Launching MoneyBin from {command}.")
+        args = []
         # Assumes the client starts the tool outside any checkout, where the
         # default home resolves. A client that starts it inside a checkout
         # opens that checkout's home instead; the guide states the assumption.
@@ -363,9 +357,9 @@ def mcp_install(
     if moneybin_home or install_home != launch_home.resolve():
         env["MONEYBIN_HOME"] = str(install_home)
 
-    args += ["moneybin", "--profile", resolved_profile, "mcp", "serve"]
+    args += ["--profile", resolved_profile, "mcp", "serve"]
 
-    server_entry: dict[str, Any] = {"command": _resolve_uv_command(), "args": args}
+    server_entry: dict[str, Any] = {"command": command, "args": args}
     if env:
         server_entry["env"] = env
 
@@ -669,6 +663,24 @@ def _resolve_uv_command() -> str:
     resolve — emit it bare and let the client report the failure.
     """
     return shutil.which("uv") or "uv"
+
+
+def _resolve_installed_moneybin() -> str:
+    """Absolute path of the `moneybin` executable on PATH, or exit 1.
+
+    Unresolved symlinks on purpose: Homebrew's `bin/moneybin` link survives an
+    upgrade, while its Cellar target is versioned and is removed by cleanup.
+    """
+    found = shutil.which("moneybin")
+    if found is None:
+        _emit_diagnostic(
+            "No installed `moneybin` executable on PATH for the client to launch. "
+            "Install it (`uv tool install` or Homebrew) and re-run, "
+            "or run this from a MoneyBin checkout.",
+            level="error",
+        )
+        raise typer.Exit(1)
+    return str(Path(found).absolute())
 
 
 def _print_client_notes(client: str) -> None:
