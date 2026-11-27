@@ -261,7 +261,7 @@ def column_view(
     uncategorized = {c.name for c in spec.columns if c.uncategorized}
     placeholder = next(
         (
-            Placeholder(name, UNCATEGORIZED_LABEL)
+            Placeholder(name, UNCATEGORIZED_LABEL, show_count=False)
             for name in visible
             if name in uncategorized
         ),

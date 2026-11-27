@@ -813,22 +813,16 @@ Numbered, each independently testable.
 30. A row with no category renders a single consistent placeholder —
     `Uncategorized` — in **text output only**. Requirement 29 means the raw
     provider code can no longer reach this column, so the placeholder now stands
-    for a genuine absence rather than masking a vocabulary mismatch. The count of
-    such rows rides the **result framing** (requirement 10), not a `render_note`:
-    requirement 4 suppresses notes under `--quiet`, and a taxonomy gap the user
-    cannot see is exactly what requirement 29 exists to prevent. This **widens
-    requirement 10's trigger**: result framing is emitted when columns are
-    omitted *or* when the placeholder appears in the column declared to carry
-    it. Without that widening the disclosure would vanish in exactly the cases
-    it matters — under `--wide`, and for any report whose full projection
-    already fits 80 columns, neither of which omits a column. The framing
-    clauses share one line.
+    for a genuine absence rather than masking a vocabulary mismatch.
+    Transaction lists count the missing categories in the result-framing line
+    (requirement 10), including under `--quiet` and `--wide`. When columns
+    are omitted, both counts share one line.
 
-    **The renderer substitutes, and counts what it substituted (surfaced
-    during implementation).** The caller declares the column and the word, then
-    passes the stored value through — NULL included — rather than substituting
-    and letting the renderer match the string back. Two things fall out that
-    the string match got wrong. A description or a category a person *authored*
+    **Count a missing transaction category at substitution time.** The caller
+    declares the column and the word, then passes the stored value through —
+    NULL included — rather than substituting and letting the renderer match the
+    string back. Two things fall out that the string match got wrong.
+    A description or a category a person *authored*
     as `Uncategorized` is a value, not a gap: `tabular` and `manual` keep
     whatever text was written, and plenty of tools export that exact word as
     their own placeholder, so matching the rendered string would count an
@@ -882,11 +876,10 @@ Numbered, each independently testable.
 
     A report declares its column as `OutputColumn(uncategorized=True)`; the
     column's `DataClass.CATEGORY` alone does not qualify it, because that class
-    also covers `subcategory`, where a NULL is not a taxonomy gap. The framing
-    count on a report counts rows of the report's grain — a category-month on
-    `spending-trend` — not transactions, so one NULL-category series over a
-    twelve-month window reads `12 uncategorized`. Dropping the count from
-    report tables is planned.
+    also covers `subcategory`, where a NULL is not a taxonomy gap.
+    Report tables render the placeholder and omit its count. For example, one
+    uncategorized series in `spending-trend` can appear in every month of a
+    twelve-month report.
 
 **Stubs (F4)**
 
