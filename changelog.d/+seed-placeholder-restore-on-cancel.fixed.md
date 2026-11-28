@@ -1,0 +1,1 @@
+Cancelling profile creation or `moneybin transform seed` with Ctrl-C while seeds are loading no longer leaves the default category tables missing for the rest of that session; a restore failure now logs one warning and keeps the original error.
