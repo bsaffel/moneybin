@@ -184,6 +184,31 @@ def test_url_scheme_literal_is_rejected(url: str) -> None:
     assert "URL literals" in error
 
 
+def _assert_surface_qualified_discovery_hint(text: str) -> None:
+    # MCP callers get the cheap catalog; CLI callers keep SQL they can run.
+    assert "Over MCP, call the sql_schema tool" in text
+    assert "table='<schema>.*'" in text
+    assert "from `moneybin sql query`, SHOW ALL TABLES lists what exists." in text
+    # `sql_schema` is MCP-only; never offer it as a CLI command or SQL.
+    assert "moneybin sql schema" not in text
+    assert "SHOW ALL TABLES to inspect schema" not in text
+
+
+def test_non_read_only_refusal_points_mcp_to_sql_schema() -> None:
+    """The PRAGMA/EXPLAIN refusal names each surface's schema-discovery path."""
+    error = validate_read_only_query("PRAGMA show_tables")
+    assert error is not None
+    _assert_surface_qualified_discovery_hint(error)
+
+
+def test_schema_refusal_hint_points_mcp_to_sql_schema(populated_db: Database) -> None:
+    """The disallowed-schema refusal names each surface's schema-discovery path."""
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(populated_db, "SHOW TABLES FROM meta", max_rows=10)
+    assert ei.value.code == error_codes.SQL_SCHEMA_NOT_ALLOWED
+    _assert_surface_qualified_discovery_hint(ei.value.hint or "")
+
+
 def test_url_scheme_rejection_surfaces_as_user_error(populated_db: Database) -> None:
     """End-to-end: the primitive raises UserError(sql_invalid_query) on a remote scheme."""
     with pytest.raises(UserError) as ei:

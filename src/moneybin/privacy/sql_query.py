@@ -175,6 +175,16 @@ def _contains_write_operation(tree: exp.Expr) -> bool:
     return any(tree.find_all(*_WRITE_EXPRESSION_TYPES))
 
 
+# This primitive backs both the MCP tool and `moneybin sql query`, and the CLI
+# has no `sql_schema` counterpart, so schema-discovery guidance names each
+# surface's own path: the cheap catalog over MCP, SHOW ALL TABLES on the CLI.
+SCHEMA_DISCOVERY_HINT = (
+    "Over MCP, call the sql_schema tool for a compact catalog "
+    "(table='<schema>.*' lists one schema); from `moneybin sql query`, "
+    "SHOW ALL TABLES lists what exists."
+)
+
+
 def validate_read_only_query(sql: str) -> str | None:
     """Validate that a SQL query is read-only.
 
@@ -193,8 +203,8 @@ def validate_read_only_query(sql: str) -> str | None:
         return (
             "Only read-only queries are allowed. "
             "Queries must start with SELECT, WITH, DESCRIBE, or SHOW. "
-            "PRAGMA and EXPLAIN are not supported; use DESCRIBE <table> or "
-            "SHOW ALL TABLES to inspect schema."
+            "PRAGMA and EXPLAIN are not supported; use DESCRIBE <table> to "
+            f"inspect one table. {SCHEMA_DISCOVERY_HINT}"
         )
 
     if _FILE_ACCESS_FUNCTIONS.search(stripped):
@@ -431,14 +441,11 @@ def _refuse_disallowed_schemas(tree: exp.Expr, snapshot: SchemaSnapshot) -> None
             # what makes them safe to admit — and is why naming the complement
             # would have had to be rewritten again here.
             #
-            # Name only SQL both surfaces can run. This primitive backs the MCP
-            # tool and `moneybin sql query` alike, and there is no CLI
-            # counterpart to `sql_schema` — pointing at it would hand a CLI
-            # caller a tool it cannot invoke.
+            # Discovery guidance is surface-qualified; see SCHEMA_DISCOVERY_HINT.
             hint=(
                 "Those carry per-column privacy classifications or a content-net "
                 "floor, which is what makes masking sound; every other schema is "
-                "internal and has neither. SHOW ALL TABLES lists what exists."
+                f"internal and has neither. {SCHEMA_DISCOVERY_HINT}"
             ),
             details={"disallowed": sorted(set(disallowed))},
         )
