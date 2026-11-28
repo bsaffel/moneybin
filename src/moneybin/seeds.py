@@ -80,16 +80,33 @@ def materialize_seeds(db: Database) -> None:
 
     if _SEED_MODELS:
         logger.info("Materializing seed models")
-        _drop_seed_placeholders(db)
         try:
+            _drop_seed_placeholders(db)
             with sqlmesh_context(db) as ctx:
                 ctx.plan(auto_apply=True, no_prompts=True, select_models=_SEED_MODELS)
-        except Exception:
-            # The placeholders are gone; restore them so the dim views resolve.
-            refresh_views(db)
+        except BaseException as error:
+            # Ctrl-C included: the placeholders may be gone, so the dim views
+            # would not resolve for the rest of this connection.
+            _restore_seed_placeholders(db, error)
             raise
 
     refresh_views(db)
+
+
+def _restore_seed_placeholders(db: Database, error: BaseException) -> None:
+    """Recreate the seed placeholders after ``error`` interrupted materialization.
+
+    A restore failure leaves ``error`` primary for the caller to re-raise; only
+    a cancellation during the restore outranks an ordinary ``error``.
+    """
+    try:
+        refresh_views(db)
+    except BaseException as restore_error:  # the caller re-raises the original
+        logger.warning(
+            "Seed setup is incomplete; run 'moneybin transform seed' to finish it"
+        )
+        if isinstance(error, Exception) and not isinstance(restore_error, Exception):
+            raise
 
 
 def _drop_seed_placeholders(db: Database) -> None:
